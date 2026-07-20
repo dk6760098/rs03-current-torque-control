@@ -32,6 +32,27 @@ sudo ip link set can0 txqueuelen 100
 sudo ip link set can0 up
 ```
 
+### WSL2 + 串口式 CAN 适配器
+
+如果 `lsusb` 能看到设备且出现 `/dev/ttyUSB0`，并且适配器固件支持
+SLCAN 协议，可运行：
+
+```bash
+cd ~/ros2_ws/src/rs03_current_torque_control
+bash scripts/setup_socketcan.sh slcan can0 /dev/ttyUSB0
+```
+
+脚本会加载 `can`、`can_raw`、`slcan`，以 1 Mbit/s 创建 `can0` 并验证
+CAN_RAW 套接字。如果 `slcand` 无法创建接口，通常表示串口转换器不使用
+SLCAN 协议；此时需要适配器厂商的 Linux SocketCAN 驱动，不能仅凭存在
+`/dev/ttyUSB0` 就直接运行本节点。
+
+原生 SocketCAN 适配器已经产生 `can0` 时使用：
+
+```bash
+bash scripts/setup_socketcan.sh native can0
+```
+
 ## 第一次测试
 
 1. 电机固定可靠、输出轴无人员接触，准备急停/断电。

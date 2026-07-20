@@ -14,6 +14,6 @@ target_compile_features(rs03_current_torque_node PUBLIC cxx_std_17)
 ament_target_dependencies(rs03_current_torque_node rclcpp std_msgs)
 
 install(TARGETS rs03_current_torque_node DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config launch scripts DESTINATION share/${PROJECT_NAME})
 
 ament_package()

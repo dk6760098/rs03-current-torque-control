@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -50,20 +51,24 @@ class Rs03Can {
           int receive_timeout_ms)
       : master_id_(master_id), motor_id_(motor_id) {
     fd_ = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-    if (fd_ < 0) throw std::runtime_error("cannot create CAN socket");
+    if (fd_ < 0)
+      throw std::runtime_error(std::string("cannot create CAN socket: ") +
+                               std::strerror(errno));
 
     ifreq ifr{};
     std::strncpy(ifr.ifr_name, iface.c_str(), IFNAMSIZ - 1);
     if (ioctl(fd_, SIOCGIFINDEX, &ifr) < 0) {
       close(fd_); fd_ = -1;
-      throw std::runtime_error("CAN interface not found: " + iface);
+      throw std::runtime_error("CAN interface not found: " + iface + ": " +
+                               std::strerror(errno));
     }
     sockaddr_can address{};
     address.can_family = AF_CAN;
     address.can_ifindex = ifr.ifr_ifindex;
     if (bind(fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)) < 0) {
       close(fd_); fd_ = -1;
-      throw std::runtime_error("cannot bind CAN interface: " + iface);
+      throw std::runtime_error("cannot bind CAN interface: " + iface + ": " +
+                               std::strerror(errno));
     }
     timeval timeout{};
     timeout.tv_sec = receive_timeout_ms / 1000;
@@ -142,7 +147,8 @@ class Rs03Can {
 
   void write_frame(const can_frame &frame) {
     if (write(fd_, &frame, sizeof(frame)) != sizeof(frame))
-      throw std::runtime_error("CAN frame write failed");
+      throw std::runtime_error(std::string("CAN frame write failed: ") +
+                               std::strerror(errno));
   }
 
   int fd_{-1};

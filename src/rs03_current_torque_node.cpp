@@ -28,6 +28,7 @@ constexpr uint8_t kTypeMotion = 0x01;
 constexpr uint8_t kTypeFeedback = 0x02;
 constexpr uint8_t kTypeEnable = 0x03;
 constexpr uint8_t kTypeStop = 0x04;
+constexpr uint8_t kTypeReadParam = 0x11;
 constexpr uint8_t kTypeWriteParam = 0x12;
 constexpr uint16_t kRunMode = 0x7005;
 constexpr uint16_t kIqRef = 0x7006;
@@ -35,6 +36,7 @@ constexpr uint16_t kSpeedRef = 0x700A;
 constexpr uint16_t kPositionRef = 0x7016;
 constexpr uint16_t kPositionSpeedLimit = 0x7024;
 constexpr uint16_t kCurrentLimit = 0x7018;
+constexpr uint16_t kMechanicalPosition = 0x7019;
 constexpr uint16_t kVelocityAcceleration = 0x7022;
 constexpr uint16_t kPositionAcceleration = 0x7025;
 constexpr float kProtocolCurrentMaxA = 43.0F;
@@ -55,6 +57,13 @@ uint16_t encode_u16(float value, float low, float high) {
 
 float decode_u16(uint16_t value, float low, float high) {
   return static_cast<float>(value) * (high - low) / 65535.0F + low;
+}
+
+float cyclic_position_error(float absolute_target, float cyclic_feedback) {
+  // Type-2 position feedback cycles over -4pi..+4pi, whereas mechPos/loc_ref
+  // are absolute multi-turn positions. Compare them modulo the 8pi period.
+  return std::remainder(absolute_target - cyclic_feedback,
+                        2.0F * kPositionMaxRad);
 }
 }  // namespace
 
@@ -163,6 +172,31 @@ class Rs03Can {
     static_assert(sizeof(float) == 4, "RS03 protocol requires 32-bit float");
     std::memcpy(data.data() + 4, &value, sizeof(value));
     send(kTypeWriteParam, master_id_, data);
+  }
+
+  bool read_float_parameter(uint16_t index, float &value) {
+    std::array<uint8_t, 8> request{};
+    request[0] = static_cast<uint8_t>(index & 0xff);
+    request[1] = static_cast<uint8_t>(index >> 8);
+    send(kTypeReadParam, master_id_, request);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(receive_timeout_ms_);
+    while (std::chrono::steady_clock::now() < deadline) {
+      can_frame frame{};
+      if (!read_frame(frame, deadline)) return false;
+      if (!(frame.can_id & CAN_EFF_FLAG) || frame.can_dlc < 8) continue;
+      const uint32_t id = frame.can_id & CAN_EFF_MASK;
+      if (((id >> 24) & 0x1f) != kTypeReadParam ||
+          (id & 0xff) != master_id_ || ((id >> 8) & 0xff) != motor_id_)
+        continue;
+      const uint16_t response_index =
+          static_cast<uint16_t>(frame.data[0]) |
+          (static_cast<uint16_t>(frame.data[1]) << 8);
+      if (response_index != index) continue;
+      std::memcpy(&value, frame.data + 4, sizeof(value));
+      return std::isfinite(value);
+    }
+    return false;
   }
 
   void set_torque(float torque_nm) {
@@ -394,9 +428,28 @@ class Rs03Node final : public rclcpp::Node {
     command_sub_ = create_subscription<std_msgs::msg::Float32>(
         command_topic, 10,
         [this](std_msgs::msg::Float32::ConstSharedPtr msg) {
+          if (!std::isfinite(msg->data)) {
+            RCLCPP_ERROR(get_logger(), "rejected non-finite command");
+            return;
+          }
           command_ = msg->data;
           last_command_ = now();
           command_seen_ = true;
+          if (position_waiting_for_command_) {
+            const float offset = std::clamp(
+                command_, -static_cast<float>(position_max_offset_rad_),
+                static_cast<float>(position_max_offset_rad_));
+            applied_command_ = offset;
+            can_->set_position(startup_position_rad_ + offset);
+            can_->enable();
+            enabled_ = true;
+            position_waiting_for_command_ = false;
+            last_update_ = std::chrono::steady_clock::now();
+            RCLCPP_INFO(get_logger(),
+                        "position mode enabled on first command: target=%.3f rad "
+                        "(startup=%.3f, offset=%.3f)",
+                        startup_position_rad_ + offset, startup_position_rad_, offset);
+          }
         });
     torque_pub_ = create_publisher<std_msgs::msg::Float32>("~/estimated_torque_nm", 10);
     position_pub_ = create_publisher<std_msgs::msg::Float32>("~/position_rad", 10);
@@ -426,18 +479,33 @@ class Rs03Node final : public rclcpp::Node {
       else if (mode_ == "velocity") run_mode = 2;
       else if (mode_ == "position_pp") run_mode = 1;
       can_->set_mode(run_mode);
-      can_->enable();
-      if (mode_ == "velocity") {
+      if (mode_ == "current") {
+        can_->set_iq(0.0F);
+      } else if (mode_ == "velocity") {
         can_->configure_velocity(static_cast<float>(velocity_current_limit_a_),
                                  static_cast<float>(velocity_acceleration_rad_s2_));
         can_->set_velocity(0.0F);
       } else if (mode_ == "position_pp") {
+        float mechanical_position = 0.0F;
+        if (!can_->read_float_parameter(kMechanicalPosition, mechanical_position))
+          throw std::runtime_error(
+              "refusing PP mode: cannot read absolute mechanical position (0x7019)");
+        startup_position_rad_ = mechanical_position;
         can_->configure_position_pp(static_cast<float>(position_current_limit_a_),
                                     static_cast<float>(position_speed_limit_rad_s_),
                                     static_cast<float>(position_acceleration_rad_s2_));
-        can_->set_position(startup_position_rad_);
+        position_waiting_for_command_ = true;
+        RCLCPP_WARN(get_logger(),
+                    "position mode armed at mechanical position %.3f rad; motor remains "
+                    "disabled until the first valid position command",
+                    startup_position_rad_);
+      } else {
+        can_->set_torque(0.0F);
       }
-      enabled_ = true;
+      if (mode_ != "position_pp") {
+        can_->enable();
+        enabled_ = true;
+      }
       last_command_ = now();
       last_update_ = std::chrono::steady_clock::now();
     } else {
@@ -515,8 +583,11 @@ class Rs03Node final : public rclcpp::Node {
         velocity_trip_count_ = 0;
       const bool velocity_trip = velocity_trip_count_ >= velocity_trip_samples_;
       const float position_target = startup_position_rad_ + applied_command_;
+      const float position_error = mode_ == "position_pp"
+          ? cyclic_position_error(position_target, fb.position_rad)
+          : 0.0F;
       const bool position_trip = mode_ == "position_pp" && command_seen_ &&
-          std::abs(position_target - fb.position_rad) > position_tracking_error_rad_;
+          std::abs(position_error) > position_tracking_error_rad_;
       if (velocity_trip || position_trip || fb.temperature_c > max_temperature_c_) {
         send_zero_command();
         can_->stop();
@@ -526,7 +597,7 @@ class Rs03Node final : public rclcpp::Node {
                      "safety stop: velocity=%.3f rad/s (limit %.3f), "
                      "position_error=%.3f rad (limit %.3f), temperature=%.1f C (limit %.1f)",
                      fb.velocity_rad_s, max_velocity_rad_s_,
-                     mode_ == "position_pp" ? position_target - fb.position_rad : 0.0F,
+                     position_error,
                      position_tracking_error_rad_,
                      fb.temperature_c, max_temperature_c_);
       }
@@ -550,6 +621,7 @@ class Rs03Node final : public rclcpp::Node {
   std::unique_ptr<Rs03Can> can_;
   std::string mode_;
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
+  bool position_waiting_for_command_{false};
   double max_velocity_command_rad_s_{0.5}, velocity_current_limit_a_{0.5};
   double velocity_acceleration_rad_s2_{0.5};
   double position_max_offset_rad_{0.2}, position_current_limit_a_{0.5};

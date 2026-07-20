@@ -440,8 +440,16 @@ class Rs03Node final : public rclcpp::Node {
                 command_, -static_cast<float>(position_max_offset_rad_),
                 static_cast<float>(position_max_offset_rad_));
             applied_command_ = offset;
-            can_->set_position(startup_position_rad_ + offset);
+            // Clear any stale PP target before enabling. RS03 PP mode applies
+            // vel_max/acc_set/loc_ref after enable, so write the real target
+            // again only after the motor is enabled.
+            can_->set_position(startup_position_rad_);
             can_->enable();
+            can_->configure_position_pp(
+                static_cast<float>(position_current_limit_a_),
+                static_cast<float>(position_speed_limit_rad_s_),
+                static_cast<float>(position_acceleration_rad_s2_));
+            can_->set_position(startup_position_rad_ + offset);
             enabled_ = true;
             position_waiting_for_command_ = false;
             last_update_ = std::chrono::steady_clock::now();

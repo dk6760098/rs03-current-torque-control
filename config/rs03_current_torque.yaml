@@ -3,13 +3,13 @@ rs03_current_torque:
     transport: serial           # serial (official CH340) | socketcan
     serial_device: /dev/ttyUSB0
     serial_baud: 921600
-    serial_debug: true           # disable after the first successful link test
+    serial_debug: false
     can_interface: can0         # used only when transport=socketcan
     motor_id: 12
     master_id: 255
     control_mode: current       # current | torque
     auto_enable: false          # first bench test: keep false
     command_timeout_s: 0.10
-    max_current_a: 1.0          # deliberately conservative; RS03 protocol limit is 43 A
-    max_torque_nm: 2.0          # deliberately conservative; RS03 protocol limit is 60 Nm
-    receive_timeout_ms: 200      # startup diagnostics; reduce after link validation
+    max_current_a: 0.5          # initial bench limit; RS03 protocol limit is 43 A
+    max_torque_nm: 1.0          # initial bench limit; RS03 protocol limit is 60 Nm
+    receive_timeout_ms: 20

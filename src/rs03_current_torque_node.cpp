@@ -340,8 +340,13 @@ class Rs03Node final : public rclcpp::Node {
     can_->stop();
     Rs03Can::Feedback probe{};
     const bool motor_online = can_->receive_feedback(probe);
-    if (motor_online)
-      RCLCPP_INFO(get_logger(), "RS03 feedback received; transport is online");
+    if (motor_online) {
+      RCLCPP_INFO(get_logger(),
+                  "RS03 feedback received: position=%.3f rad, velocity=%.3f rad/s, "
+                  "estimated_torque=%.3f Nm, temperature=%.1f C",
+                  probe.position_rad, probe.velocity_rad_s, probe.torque_nm,
+                  probe.temperature_c);
+    }
     else
       RCLCPP_WARN(get_logger(), "no RS03 feedback after safe stop probe");
 

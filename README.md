@@ -54,6 +54,23 @@ ros2 launch rs03_current_torque_control rs03_current_torque.launch.py
 `RS03 feedback received; transport is online` 才表示串口和 CAN 链路真正连通。
 没有有效反馈时，即使 `auto_enable=true`，节点也会拒绝使能。
 
+第一次低电流测试时，显式传入使能和限幅：
+
+```bash
+ros2 launch rs03_current_torque_control rs03_current_torque.launch.py \
+  auto_enable:=true control_mode:=current max_current_a:=0.5
+```
+
+在另一个已经 source 工作空间的终端中，以 20 Hz 发送 `0.1 A`：
+
+```bash
+ros2 topic pub -r 20 \
+  /rs03_current_torque/current_command_a std_msgs/msg/Float32 "{data: 0.1}"
+```
+
+停止发布后，100 ms 看门狗会把电流指令归零。完成测试后也要停止控制节点，
+使其发送停止帧；不要依赖软件停机代替硬件急停。
+
 ### WSL2 + SLCAN 兼容适配器
 
 如果 `lsusb` 能看到设备且出现 `/dev/ttyUSB0`，并且适配器固件支持

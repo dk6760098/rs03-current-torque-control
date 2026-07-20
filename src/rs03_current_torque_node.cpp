@@ -316,6 +316,7 @@ class Rs03Node final : public rclcpp::Node {
     current_slew_rate_ = declare_parameter("current_slew_rate_a_s", 0.5);
     torque_slew_rate_ = declare_parameter("torque_slew_rate_nm_s", 1.0);
     max_velocity_rad_s_ = declare_parameter("max_velocity_rad_s", 2.0);
+    velocity_trip_samples_ = declare_parameter("velocity_trip_samples", 5);
     max_temperature_c_ = declare_parameter("max_temperature_c", 60.0);
     const auto receive_timeout = declare_parameter("receive_timeout_ms", 20);
     if (motor_id < 0 || motor_id > 255 || master_id < 0 || master_id > 255)
@@ -325,6 +326,8 @@ class Rs03Node final : public rclcpp::Node {
     if (current_slew_rate_ <= 0.0 || torque_slew_rate_ <= 0.0 ||
         max_velocity_rad_s_ <= 0.0 || max_temperature_c_ <= 0.0)
       throw std::invalid_argument("safety limits and slew rates must be positive");
+    if (velocity_trip_samples_ < 1)
+      throw std::invalid_argument("velocity_trip_samples must be at least 1");
     if (mode_ != "current" && mode_ != "torque")
       throw std::invalid_argument("control_mode must be current or torque");
     if (transport != "serial" && transport != "socketcan")
@@ -342,6 +345,9 @@ class Rs03Node final : public rclcpp::Node {
           command_seen_ = true;
         });
     torque_pub_ = create_publisher<std_msgs::msg::Float32>("~/estimated_torque_nm", 10);
+    position_pub_ = create_publisher<std_msgs::msg::Float32>("~/position_rad", 10);
+    velocity_pub_ = create_publisher<std_msgs::msg::Float32>("~/velocity_rad_s", 10);
+    temperature_pub_ = create_publisher<std_msgs::msg::Float32>("~/temperature_c", 10);
     timer_ = create_wall_timer(10ms, [this] { update(); });
 
     can_->stop();
@@ -415,8 +421,19 @@ class Rs03Node final : public rclcpp::Node {
       std_msgs::msg::Float32 msg;
       msg.data = fb.torque_nm;
       torque_pub_->publish(msg);
-      if (std::abs(fb.velocity_rad_s) > max_velocity_rad_s_ ||
-          fb.temperature_c > max_temperature_c_) {
+      msg.data = fb.position_rad;
+      position_pub_->publish(msg);
+      msg.data = fb.velocity_rad_s;
+      velocity_pub_->publish(msg);
+      msg.data = fb.temperature_c;
+      temperature_pub_->publish(msg);
+
+      if (std::abs(fb.velocity_rad_s) > max_velocity_rad_s_)
+        ++velocity_trip_count_;
+      else
+        velocity_trip_count_ = 0;
+      const bool velocity_trip = velocity_trip_count_ >= velocity_trip_samples_;
+      if (velocity_trip || fb.temperature_c > max_temperature_c_) {
         if (mode_ == "current") can_->set_iq(0.0F); else can_->set_torque(0.0F);
         can_->stop();
         enabled_ = false;
@@ -442,12 +459,17 @@ class Rs03Node final : public rclcpp::Node {
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
   double current_slew_rate_{0.5}, torque_slew_rate_{1.0};
   double max_velocity_rad_s_{2.0}, max_temperature_c_{60.0};
+  int64_t velocity_trip_samples_{5};
+  int64_t velocity_trip_count_{0};
   float command_{0.0F}, applied_command_{0.0F};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_update_{std::chrono::steady_clock::now()};
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr command_sub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr torque_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr position_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr velocity_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr temperature_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

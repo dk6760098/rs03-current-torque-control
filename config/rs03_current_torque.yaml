@@ -15,5 +15,6 @@ rs03_current_torque:
     current_slew_rate_a_s: 0.5
     torque_slew_rate_nm_s: 1.0
     max_velocity_rad_s: 2.0     # stop output if torque mode runs away
+    velocity_trip_samples: 5    # reject isolated encoder/estimator spikes
     max_temperature_c: 60.0
     receive_timeout_ms: 20

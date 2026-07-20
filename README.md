@@ -73,8 +73,18 @@ ros2 topic pub -r 20 \
 代替硬件急停。
 
 台架配置还会限制命令变化率，并在反馈速度超过 `2 rad/s` 或温度超过
-`60 C` 时发送零命令和停止帧。纯力矩模式在克服静摩擦后会继续加速，速度
+`60 C` 时发送零命令和停止帧。速度必须连续 5 个反馈样本超限才会触发，
+避免编码器速度的单点噪声误停。纯力矩模式在克服静摩擦后会继续加速，速度
 保护只是最后一道软件保护，不会把力矩模式变成速度控制。
+
+可观察的反馈话题包括：
+
+```text
+/rs03_current_torque/position_rad
+/rs03_current_torque/velocity_rad_s
+/rs03_current_torque/estimated_torque_nm
+/rs03_current_torque/temperature_c
+```
 
 ### WSL2 + SLCAN 兼容适配器
 

@@ -1,9 +1,11 @@
 # RS03 电流/直接力矩控制（ROS2）
 
-本包依据 RS03 官方私有 CAN 协议实现两种模式：
+本包依据 RS03 官方私有 CAN 协议实现四种模式：
 
 - `current`：设置 `run_mode=3`，向 `0x7006 iq_ref` 直接写入单位为 A 的 `float32`。底层电流 PI 在驱动器内部运行。
 - `torque`：使用通信类型 1 的前馈力矩字段，位置/速度目标及 `Kp/Kd` 均设为 0。协议范围为 ±60 N·m。
+- `velocity`：设置 `run_mode=2`，写入速度目标，并配置电流和加速度限制。
+- `position_pp`：设置 `run_mode=1`，使用驱动器内部 PP 轨迹，以节点启动位置为基准发送相对位置。
 
 通信后端支持：
 
@@ -85,6 +87,52 @@ ros2 topic pub -r 20 \
 /rs03_current_torque/estimated_torque_nm
 /rs03_current_torque/temperature_c
 ```
+
+## 速度模式
+
+第一次测试建议限制在 `0.2 rad/s`，约为输出轴 `1.9 rpm`：
+
+```bash
+ros2 launch rs03_current_torque_control rs03_current_torque.launch.py \
+  auto_enable:=true control_mode:=velocity \
+  max_velocity_command_rad_s:=0.2 max_velocity_rad_s:=0.5
+```
+
+另一个终端持续发送：
+
+```bash
+ros2 topic pub -r 20 \
+  /rs03_current_torque/velocity_command_rad_s \
+  std_msgs/msg/Float32 "{data: 0.1}"
+```
+
+`velocity_current_limit_a` 限制速度环可调用的电流，
+`velocity_acceleration_rad_s2` 和 `velocity_slew_rate_rad_s2` 限制加速过程。
+
+## PP 相对位置模式
+
+位置命令是相对于节点启动位置的偏移量，不是绝对编码器位置。第一次测试建议
+偏移 `0.05 rad`（约 2.9 度），最大偏移和速度分别限制为 `0.2 rad`、
+`0.2 rad/s`：
+
+```bash
+ros2 launch rs03_current_torque_control rs03_current_torque.launch.py \
+  auto_enable:=true control_mode:=position_pp \
+  position_max_offset_rad:=0.2 position_speed_limit_rad_s:=0.2 \
+  max_velocity_rad_s:=0.5
+```
+
+另一个终端持续发送：
+
+```bash
+ros2 topic pub -r 20 \
+  /rs03_current_torque/position_offset_command_rad \
+  std_msgs/msg/Float32 "{data: 0.05}"
+```
+
+正负方向必须先用小偏移确认。命令超时会停止驱动器，但不会发送“返回启动
+位置”的命令。位置误差超过 `position_tracking_error_rad`、连续超速或过温均会
+触发停机锁定。
 
 ### WSL2 + SLCAN 兼容适配器
 

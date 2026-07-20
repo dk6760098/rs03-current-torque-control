@@ -7,11 +7,19 @@ rs03_current_torque:
     can_interface: can0         # used only when transport=socketcan
     motor_id: 12
     master_id: 255
-    control_mode: current       # current | torque
+    control_mode: current       # current | torque | velocity | position_pp
     auto_enable: false          # first bench test: keep false
     command_timeout_s: 0.10
     max_current_a: 0.5          # initial bench limit; RS03 protocol limit is 43 A
     max_torque_nm: 1.0          # initial bench limit; RS03 protocol limit is 60 Nm
+    max_velocity_command_rad_s: 0.5
+    velocity_current_limit_a: 0.5
+    velocity_acceleration_rad_s2: 0.5
+    velocity_slew_rate_rad_s2: 0.5
+    position_max_offset_rad: 0.2
+    position_speed_limit_rad_s: 0.2
+    position_acceleration_rad_s2: 0.5
+    position_tracking_error_rad: 0.5
     current_slew_rate_a_s: 0.5
     torque_slew_rate_nm_s: 1.0
     max_velocity_rad_s: 2.0     # stop output if torque mode runs away

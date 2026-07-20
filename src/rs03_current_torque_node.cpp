@@ -31,6 +31,12 @@ constexpr uint8_t kTypeStop = 0x04;
 constexpr uint8_t kTypeWriteParam = 0x12;
 constexpr uint16_t kRunMode = 0x7005;
 constexpr uint16_t kIqRef = 0x7006;
+constexpr uint16_t kSpeedRef = 0x700A;
+constexpr uint16_t kPositionRef = 0x7016;
+constexpr uint16_t kPositionSpeedLimit = 0x7024;
+constexpr uint16_t kCurrentLimit = 0x7018;
+constexpr uint16_t kVelocityAcceleration = 0x7022;
+constexpr uint16_t kPositionAcceleration = 0x7025;
 constexpr float kProtocolCurrentMaxA = 43.0F;
 constexpr float kProtocolTorqueMaxNm = 60.0F;
 constexpr float kPositionMaxRad = 4.0F * static_cast<float>(M_PI);
@@ -124,11 +130,34 @@ class Rs03Can {
   }
 
   void set_iq(float current_a) {
+    set_float_parameter(kIqRef, current_a);
+  }
+
+  void set_velocity(float velocity_rad_s) {
+    set_float_parameter(kSpeedRef, velocity_rad_s);
+  }
+
+  void set_position(float position_rad) {
+    set_float_parameter(kPositionRef, position_rad);
+  }
+
+  void configure_velocity(float current_limit_a, float acceleration_rad_s2) {
+    set_float_parameter(kCurrentLimit, current_limit_a);
+    set_float_parameter(kVelocityAcceleration, acceleration_rad_s2);
+  }
+
+  void configure_position_pp(float speed_limit_rad_s,
+                             float acceleration_rad_s2) {
+    set_float_parameter(kPositionSpeedLimit, speed_limit_rad_s);
+    set_float_parameter(kPositionAcceleration, acceleration_rad_s2);
+  }
+
+  void set_float_parameter(uint16_t index, float value) {
     std::array<uint8_t, 8> data{};
-    data[0] = static_cast<uint8_t>(kIqRef & 0xff);
-    data[1] = static_cast<uint8_t>(kIqRef >> 8);
+    data[0] = static_cast<uint8_t>(index & 0xff);
+    data[1] = static_cast<uint8_t>(index >> 8);
     static_assert(sizeof(float) == 4, "RS03 protocol requires 32-bit float");
-    std::memcpy(data.data() + 4, &current_a, sizeof(current_a));
+    std::memcpy(data.data() + 4, &value, sizeof(value));
     send(kTypeWriteParam, master_id_, data);
   }
 
@@ -313,8 +342,16 @@ class Rs03Node final : public rclcpp::Node {
                                 0.0, static_cast<double>(kProtocolCurrentMaxA));
     max_torque_nm_ = std::clamp(declare_parameter("max_torque_nm", 2.0),
                                 0.0, static_cast<double>(kProtocolTorqueMaxNm));
+    max_velocity_command_rad_s_ = declare_parameter("max_velocity_command_rad_s", 0.5);
+    velocity_current_limit_a_ = declare_parameter("velocity_current_limit_a", 0.5);
+    velocity_acceleration_rad_s2_ = declare_parameter("velocity_acceleration_rad_s2", 0.5);
+    position_max_offset_rad_ = declare_parameter("position_max_offset_rad", 0.2);
+    position_speed_limit_rad_s_ = declare_parameter("position_speed_limit_rad_s", 0.2);
+    position_acceleration_rad_s2_ = declare_parameter("position_acceleration_rad_s2", 0.5);
+    position_tracking_error_rad_ = declare_parameter("position_tracking_error_rad", 0.5);
     current_slew_rate_ = declare_parameter("current_slew_rate_a_s", 0.5);
     torque_slew_rate_ = declare_parameter("torque_slew_rate_nm_s", 1.0);
+    velocity_slew_rate_ = declare_parameter("velocity_slew_rate_rad_s2", 0.5);
     max_velocity_rad_s_ = declare_parameter("max_velocity_rad_s", 2.0);
     velocity_trip_samples_ = declare_parameter("velocity_trip_samples", 5);
     max_temperature_c_ = declare_parameter("max_temperature_c", 60.0);
@@ -324,12 +361,19 @@ class Rs03Node final : public rclcpp::Node {
     if (timeout_s_ <= 0.0 || receive_timeout < 0)
       throw std::invalid_argument("timeouts must be positive");
     if (current_slew_rate_ <= 0.0 || torque_slew_rate_ <= 0.0 ||
+        velocity_slew_rate_ <= 0.0 || max_velocity_command_rad_s_ <= 0.0 ||
+        velocity_current_limit_a_ <= 0.0 || velocity_current_limit_a_ > 43.0 ||
+        velocity_acceleration_rad_s2_ <= 0.0 ||
+        position_max_offset_rad_ <= 0.0 || position_speed_limit_rad_s_ <= 0.0 ||
+        position_acceleration_rad_s2_ <= 0.0 || position_tracking_error_rad_ <= 0.0 ||
         max_velocity_rad_s_ <= 0.0 || max_temperature_c_ <= 0.0)
       throw std::invalid_argument("safety limits and slew rates must be positive");
     if (velocity_trip_samples_ < 1)
       throw std::invalid_argument("velocity_trip_samples must be at least 1");
-    if (mode_ != "current" && mode_ != "torque")
-      throw std::invalid_argument("control_mode must be current or torque");
+    if (mode_ != "current" && mode_ != "torque" && mode_ != "velocity" &&
+        mode_ != "position_pp")
+      throw std::invalid_argument(
+          "control_mode must be current, torque, velocity, or position_pp");
     if (transport != "serial" && transport != "socketcan")
       throw std::invalid_argument("transport must be serial or socketcan");
     can_ = std::make_unique<Rs03Can>(
@@ -337,8 +381,12 @@ class Rs03Node final : public rclcpp::Node {
         static_cast<uint8_t>(master_id), static_cast<uint8_t>(motor_id),
         receive_timeout);
 
+    std::string command_topic = "~/torque_command_nm";
+    if (mode_ == "current") command_topic = "~/current_command_a";
+    else if (mode_ == "velocity") command_topic = "~/velocity_command_rad_s";
+    else if (mode_ == "position_pp") command_topic = "~/position_offset_command_rad";
     command_sub_ = create_subscription<std_msgs::msg::Float32>(
-        mode_ == "current" ? "~/current_command_a" : "~/torque_command_nm", 10,
+        command_topic, 10,
         [this](std_msgs::msg::Float32::ConstSharedPtr msg) {
           command_ = msg->data;
           last_command_ = now();
@@ -354,6 +402,7 @@ class Rs03Node final : public rclcpp::Node {
     Rs03Can::Feedback probe{};
     const bool motor_online = can_->receive_feedback(probe);
     if (motor_online) {
+      startup_position_rad_ = probe.position_rad;
       RCLCPP_INFO(get_logger(),
                   "RS03 feedback received: position=%.3f rad, velocity=%.3f rad/s, "
                   "estimated_torque=%.3f Nm, temperature=%.1f C",
@@ -366,8 +415,21 @@ class Rs03Node final : public rclcpp::Node {
     if (auto_enable) {
       if (!motor_online)
         throw std::runtime_error("refusing to enable: no valid RS03 feedback");
-      can_->set_mode(mode_ == "current" ? 3 : 0);
+      uint8_t run_mode = 0;
+      if (mode_ == "current") run_mode = 3;
+      else if (mode_ == "velocity") run_mode = 2;
+      else if (mode_ == "position_pp") run_mode = 1;
+      can_->set_mode(run_mode);
       can_->enable();
+      if (mode_ == "velocity") {
+        can_->configure_velocity(static_cast<float>(velocity_current_limit_a_),
+                                 static_cast<float>(velocity_acceleration_rad_s2_));
+        can_->set_velocity(0.0F);
+      } else if (mode_ == "position_pp") {
+        can_->configure_position_pp(static_cast<float>(position_speed_limit_rad_s_),
+                                    static_cast<float>(position_acceleration_rad_s2_));
+        can_->set_position(startup_position_rad_);
+      }
       enabled_ = true;
       last_command_ = now();
       last_update_ = std::chrono::steady_clock::now();
@@ -389,32 +451,44 @@ class Rs03Node final : public rclcpp::Node {
         0.0, 0.1);
     last_update_ = update_time;
     const bool fresh = command_seen_ && (now() - last_command_).seconds() <= timeout_s_;
+    if (!fresh && command_seen_ && !timeout_reported_) {
+      send_zero_command();
+      can_->stop();
+      enabled_ = false;
+      applied_command_ = 0.0F;
+      timeout_reported_ = true;
+      RCLCPP_FATAL(get_logger(),
+                   "command timeout: output forced to zero and motor stopped; "
+                   "restart node to re-enable");
+      return;
+    }
     const float requested = fresh ? command_ : 0.0F;
-    const float limit = mode_ == "current" ? static_cast<float>(max_current_a_)
-                                            : static_cast<float>(max_torque_nm_);
+    float limit = static_cast<float>(max_torque_nm_);
+    if (mode_ == "current") limit = static_cast<float>(max_current_a_);
+    else if (mode_ == "velocity") limit = static_cast<float>(max_velocity_command_rad_s_);
+    else if (mode_ == "position_pp") limit = static_cast<float>(position_max_offset_rad_);
     const float desired = std::clamp(requested, -limit, limit);
-    if (fresh) {
-      const float rate = mode_ == "current" ? static_cast<float>(current_slew_rate_)
-                                             : static_cast<float>(torque_slew_rate_);
+    if (fresh && mode_ != "position_pp") {
+      float rate = static_cast<float>(torque_slew_rate_);
+      if (mode_ == "current") rate = static_cast<float>(current_slew_rate_);
+      else if (mode_ == "velocity") rate = static_cast<float>(velocity_slew_rate_);
       const float max_step = rate * static_cast<float>(dt);
       applied_command_ += std::clamp(desired - applied_command_, -max_step, max_step);
+    } else if (fresh) {
+      applied_command_ = desired;
     } else {
       // The communication watchdog always wins over slew limiting.
       applied_command_ = 0.0F;
     }
     if (mode_ == "current")
       can_->set_iq(applied_command_);
-    else
+    else if (mode_ == "torque")
       can_->set_torque(applied_command_);
-    if (!fresh && command_seen_ && !timeout_reported_) {
-      can_->stop();
-      enabled_ = false;
-      timeout_reported_ = true;
-      RCLCPP_FATAL(get_logger(),
-                   "command timeout: output forced to zero and motor stopped; "
-                   "restart node to re-enable");
-      return;
-    } else if (fresh) timeout_reported_ = false;
+    else if (mode_ == "velocity")
+      can_->set_velocity(applied_command_);
+    else
+      can_->set_position(startup_position_rad_ + applied_command_);
+    if (fresh) timeout_reported_ = false;
 
     Rs03Can::Feedback fb{};
     if (can_->receive_feedback(fb)) {
@@ -433,15 +507,20 @@ class Rs03Node final : public rclcpp::Node {
       else
         velocity_trip_count_ = 0;
       const bool velocity_trip = velocity_trip_count_ >= velocity_trip_samples_;
-      if (velocity_trip || fb.temperature_c > max_temperature_c_) {
-        if (mode_ == "current") can_->set_iq(0.0F); else can_->set_torque(0.0F);
+      const float position_target = startup_position_rad_ + applied_command_;
+      const bool position_trip = mode_ == "position_pp" && command_seen_ &&
+          std::abs(position_target - fb.position_rad) > position_tracking_error_rad_;
+      if (velocity_trip || position_trip || fb.temperature_c > max_temperature_c_) {
+        send_zero_command();
         can_->stop();
         enabled_ = false;
         applied_command_ = 0.0F;
         RCLCPP_FATAL(get_logger(),
                      "safety stop: velocity=%.3f rad/s (limit %.3f), "
-                     "temperature=%.1f C (limit %.1f)",
+                     "position_error=%.3f rad (limit %.3f), temperature=%.1f C (limit %.1f)",
                      fb.velocity_rad_s, max_velocity_rad_s_,
+                     mode_ == "position_pp" ? position_target - fb.position_rad : 0.0F,
+                     position_tracking_error_rad_,
                      fb.temperature_c, max_temperature_c_);
       }
     }
@@ -449,19 +528,30 @@ class Rs03Node final : public rclcpp::Node {
 
   void zero_and_stop() {
     if (!can_) return;
-    if (mode_ == "current") can_->set_iq(0.0F); else can_->set_torque(0.0F);
+    send_zero_command();
     can_->stop();
     enabled_ = false;
+  }
+
+  void send_zero_command() {
+    if (mode_ == "current") can_->set_iq(0.0F);
+    else if (mode_ == "torque") can_->set_torque(0.0F);
+    else if (mode_ == "velocity") can_->set_velocity(0.0F);
+    // PP position mode is stopped without issuing a new position target.
   }
 
   std::unique_ptr<Rs03Can> can_;
   std::string mode_;
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
-  double current_slew_rate_{0.5}, torque_slew_rate_{1.0};
+  double max_velocity_command_rad_s_{0.5}, velocity_current_limit_a_{0.5};
+  double velocity_acceleration_rad_s2_{0.5};
+  double position_max_offset_rad_{0.2}, position_speed_limit_rad_s_{0.2};
+  double position_acceleration_rad_s2_{0.5}, position_tracking_error_rad_{0.5};
+  double current_slew_rate_{0.5}, torque_slew_rate_{1.0}, velocity_slew_rate_{0.5};
   double max_velocity_rad_s_{2.0}, max_temperature_c_{60.0};
   int64_t velocity_trip_samples_{5};
   int64_t velocity_trip_count_{0};
-  float command_{0.0F}, applied_command_{0.0F};
+  float command_{0.0F}, applied_command_{0.0F}, startup_position_rad_{0.0F};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_update_{std::chrono::steady_clock::now()};

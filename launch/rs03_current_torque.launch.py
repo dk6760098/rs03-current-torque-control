@@ -20,7 +20,10 @@ def generate_launch_description():
         DeclareLaunchArgument("max_torque_nm", default_value="1.0"),
         DeclareLaunchArgument("max_velocity_command_rad_s", default_value="0.5"),
         DeclareLaunchArgument("position_max_offset_rad", default_value="0.2"),
+        DeclareLaunchArgument("position_current_limit_a", default_value="0.5"),
         DeclareLaunchArgument("position_speed_limit_rad_s", default_value="0.2"),
+        DeclareLaunchArgument("position_acceleration_rad_s2", default_value="0.5"),
+        DeclareLaunchArgument("position_tracking_error_rad", default_value="0.5"),
         DeclareLaunchArgument("max_velocity_rad_s", default_value="2.0"),
         Node(
             package="rs03_current_torque_control",
@@ -40,8 +43,14 @@ def generate_launch_description():
                         LaunchConfiguration("max_velocity_command_rad_s"), value_type=float),
                     "position_max_offset_rad": ParameterValue(
                         LaunchConfiguration("position_max_offset_rad"), value_type=float),
+                    "position_current_limit_a": ParameterValue(
+                        LaunchConfiguration("position_current_limit_a"), value_type=float),
                     "position_speed_limit_rad_s": ParameterValue(
                         LaunchConfiguration("position_speed_limit_rad_s"), value_type=float),
+                    "position_acceleration_rad_s2": ParameterValue(
+                        LaunchConfiguration("position_acceleration_rad_s2"), value_type=float),
+                    "position_tracking_error_rad": ParameterValue(
+                        LaunchConfiguration("position_tracking_error_rad"), value_type=float),
                     "max_velocity_rad_s": ParameterValue(
                         LaunchConfiguration("max_velocity_rad_s"), value_type=float),
                 },

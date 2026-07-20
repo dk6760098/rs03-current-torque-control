@@ -118,8 +118,9 @@ ros2 topic pub -r 20 \
 ```bash
 ros2 launch rs03_current_torque_control rs03_current_torque.launch.py \
   auto_enable:=true control_mode:=position_pp \
-  position_max_offset_rad:=0.2 position_speed_limit_rad_s:=0.2 \
-  max_velocity_rad_s:=0.5
+  position_max_offset_rad:=0.1 position_current_limit_a:=0.3 \
+  position_speed_limit_rad_s:=0.1 position_acceleration_rad_s2:=0.3 \
+  position_tracking_error_rad:=0.25 max_velocity_rad_s:=0.3
 ```
 
 另一个终端持续发送：
@@ -127,7 +128,7 @@ ros2 launch rs03_current_torque_control rs03_current_torque.launch.py \
 ```bash
 ros2 topic pub -r 20 \
   /rs03_current_torque/position_offset_command_rad \
-  std_msgs/msg/Float32 "{data: 0.05}"
+  std_msgs/msg/Float32 "{data: 0.03}"
 ```
 
 正负方向必须先用小偏移确认。命令超时会停止驱动器，但不会发送“返回启动

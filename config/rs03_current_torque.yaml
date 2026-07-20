@@ -1,6 +1,9 @@
 rs03_current_torque:
   ros__parameters:
-    can_interface: can0
+    transport: serial           # serial (official CH340) | socketcan
+    serial_device: /dev/ttyUSB0
+    serial_baud: 921600
+    can_interface: can0         # used only when transport=socketcan
     motor_id: 1
     master_id: 255
     control_mode: current       # current | torque

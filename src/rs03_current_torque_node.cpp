@@ -9,13 +9,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <linux/can.h>
 #include <linux/can/raw.h>
 #include <net/if.h>
 #include <stdexcept>
 #include <string>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <sys/socket.h>
+#include <termios.h>
 #include <unistd.h>
 
 using namespace std::chrono_literals;
@@ -34,6 +37,7 @@ constexpr float kPositionMaxRad = 4.0F * static_cast<float>(M_PI);
 constexpr float kVelocityMaxRadS = 50.0F;
 constexpr float kKpMax = 5000.0F;
 constexpr float kKdMax = 100.0F;
+constexpr uint8_t kSerialExtendedFrameFlag = 0x04;
 
 uint16_t encode_u16(float value, float low, float high) {
   value = std::clamp(value, low, high);
@@ -47,9 +51,41 @@ float decode_u16(uint16_t value, float low, float high) {
 
 class Rs03Can {
  public:
-  Rs03Can(const std::string &iface, uint8_t master_id, uint8_t motor_id,
-          int receive_timeout_ms)
-      : master_id_(master_id), motor_id_(motor_id) {
+  Rs03Can(const std::string &transport, const std::string &iface,
+          const std::string &serial_device, int serial_baud,
+          uint8_t master_id, uint8_t motor_id, int receive_timeout_ms)
+      : serial_mode_(transport == "serial"),
+        receive_timeout_ms_(receive_timeout_ms), master_id_(master_id),
+        motor_id_(motor_id) {
+    if (serial_mode_) {
+      if (serial_baud != 921600)
+        throw std::invalid_argument("the official CH340 transport currently requires serial_baud=921600");
+      fd_ = open(serial_device.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+      if (fd_ < 0)
+        throw std::runtime_error("cannot open serial device " + serial_device +
+                                 ": " + std::strerror(errno));
+      termios tty{};
+      if (tcgetattr(fd_, &tty) != 0) {
+        const std::string error = std::strerror(errno);
+        close(fd_); fd_ = -1;
+        throw std::runtime_error("cannot read serial settings: " + error);
+      }
+      cfmakeraw(&tty);
+      cfsetispeed(&tty, B921600);
+      cfsetospeed(&tty, B921600);
+      tty.c_cflag |= CLOCAL | CREAD;
+      tty.c_cflag &= ~CRTSCTS;
+      tty.c_cc[VMIN] = 0;
+      tty.c_cc[VTIME] = 0;
+      if (tcsetattr(fd_, TCSANOW, &tty) != 0) {
+        const std::string error = std::strerror(errno);
+        close(fd_); fd_ = -1;
+        throw std::runtime_error("cannot configure serial device: " + error);
+      }
+      tcflush(fd_, TCIOFLUSH);
+      return;
+    }
+
     fd_ = socket(PF_CAN, SOCK_RAW, CAN_RAW);
     if (fd_ < 0)
       throw std::runtime_error(std::string("cannot create CAN socket: ") +
@@ -119,20 +155,27 @@ class Rs03Can {
 
   struct Feedback { float position_rad, velocity_rad_s, torque_nm, temperature_c; };
   bool receive_feedback(Feedback &out) {
-    can_frame frame{};
-    const ssize_t count = recv(fd_, &frame, sizeof(frame), 0);
-    if (count != sizeof(frame) || !(frame.can_id & CAN_EFF_FLAG)) return false;
-    const uint32_t id = frame.can_id & CAN_EFF_MASK;
-    if (((id >> 24) & 0x1f) != kTypeFeedback || frame.can_dlc < 8) return false;
-    const uint16_t p = (frame.data[0] << 8) | frame.data[1];
-    const uint16_t v = (frame.data[2] << 8) | frame.data[3];
-    const uint16_t t = (frame.data[4] << 8) | frame.data[5];
-    const uint16_t temp = (frame.data[6] << 8) | frame.data[7];
-    out = {decode_u16(p, -kPositionMaxRad, kPositionMaxRad),
-           decode_u16(v, -kVelocityMaxRadS, kVelocityMaxRadS),
-           decode_u16(t, -kProtocolTorqueMaxNm, kProtocolTorqueMaxNm),
-           static_cast<float>(temp) * 0.1F};
-    return true;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(receive_timeout_ms_);
+    while (std::chrono::steady_clock::now() < deadline) {
+      can_frame frame{};
+      if (!read_frame(frame, deadline)) return false;
+      if (!(frame.can_id & CAN_EFF_FLAG)) continue;
+      const uint32_t id = frame.can_id & CAN_EFF_MASK;
+      if (((id >> 24) & 0x1f) != kTypeFeedback || frame.can_dlc < 8 ||
+          (id & 0xff) != master_id_ || ((id >> 8) & 0xff) != motor_id_)
+        continue;
+      const uint16_t p = (frame.data[0] << 8) | frame.data[1];
+      const uint16_t v = (frame.data[2] << 8) | frame.data[3];
+      const uint16_t t = (frame.data[4] << 8) | frame.data[5];
+      const uint16_t temp = (frame.data[6] << 8) | frame.data[7];
+      out = {decode_u16(p, -kPositionMaxRad, kPositionMaxRad),
+             decode_u16(v, -kVelocityMaxRadS, kVelocityMaxRadS),
+             decode_u16(t, -kProtocolTorqueMaxNm, kProtocolTorqueMaxNm),
+             static_cast<float>(temp) * 0.1F};
+      return true;
+    }
+    return false;
   }
 
  private:
@@ -146,12 +189,94 @@ class Rs03Can {
   }
 
   void write_frame(const can_frame &frame) {
-    if (write(fd_, &frame, sizeof(frame)) != sizeof(frame))
+    if (!serial_mode_) {
+      if (write(fd_, &frame, sizeof(frame)) != sizeof(frame))
+        throw std::runtime_error(std::string("CAN frame write failed: ") +
+                                 std::strerror(errno));
+      return;
+    }
+    const uint32_t can_id = frame.can_id & CAN_EFF_MASK;
+    const uint32_t serial_id = (can_id << 3) | kSerialExtendedFrameFlag;
+    std::array<uint8_t, 17> packet{};
+    packet[0] = 'A'; packet[1] = 'T';
+    packet[2] = static_cast<uint8_t>(serial_id >> 24);
+    packet[3] = static_cast<uint8_t>(serial_id >> 16);
+    packet[4] = static_cast<uint8_t>(serial_id >> 8);
+    packet[5] = static_cast<uint8_t>(serial_id);
+    packet[6] = frame.can_dlc;
+    std::copy(frame.data, frame.data + frame.can_dlc, packet.begin() + 7);
+    packet[7 + frame.can_dlc] = '\r';
+    packet[8 + frame.can_dlc] = '\n';
+    const size_t length = 9 + frame.can_dlc;
+    size_t offset = 0;
+    while (offset < length) {
+      const ssize_t count = write(fd_, packet.data() + offset, length - offset);
+      if (count > 0) { offset += static_cast<size_t>(count); continue; }
+      if (count < 0 && (errno == EINTR || errno == EAGAIN)) continue;
       throw std::runtime_error(std::string("CAN frame write failed: ") +
                                std::strerror(errno));
+    }
+  }
+
+  using Deadline = std::chrono::steady_clock::time_point;
+
+  bool read_exact(uint8_t *data, size_t length, const Deadline &deadline) {
+    size_t offset = 0;
+    while (offset < length && std::chrono::steady_clock::now() < deadline) {
+      fd_set set;
+      FD_ZERO(&set); FD_SET(fd_, &set);
+      const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
+          deadline - std::chrono::steady_clock::now());
+      if (remaining.count() <= 0) return false;
+      timeval timeout{static_cast<time_t>(remaining.count() / 1000000),
+                      static_cast<suseconds_t>(remaining.count() % 1000000)};
+      const int ready = select(fd_ + 1, &set, nullptr, nullptr, &timeout);
+      if (ready == 0) return false;
+      if (ready < 0) { if (errno == EINTR) continue; return false; }
+      const ssize_t count = read(fd_, data + offset, length - offset);
+      if (count > 0) offset += static_cast<size_t>(count);
+      else if (count < 0 && errno != EINTR && errno != EAGAIN) return false;
+    }
+    return offset == length;
+  }
+
+  bool read_frame(can_frame &frame, const Deadline &deadline) {
+    if (!serial_mode_) {
+      const ssize_t count = recv(fd_, &frame, sizeof(frame), 0);
+      return count == sizeof(frame);
+    }
+    bool found_a = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      uint8_t byte = 0;
+      if (!read_exact(&byte, 1, deadline)) return false;
+      if (!found_a) { found_a = byte == 'A'; continue; }
+      if (byte != 'T') { found_a = byte == 'A'; continue; }
+      uint8_t header[5]{};
+      if (!read_exact(header, sizeof(header), deadline)) return false;
+      const uint32_t serial_id = (static_cast<uint32_t>(header[0]) << 24) |
+                                 (static_cast<uint32_t>(header[1]) << 16) |
+                                 (static_cast<uint32_t>(header[2]) << 8) |
+                                 header[3];
+      const uint8_t dlc = header[4];
+      if (dlc > 8) { found_a = false; continue; }
+      uint8_t payload[10]{};
+      if (!read_exact(payload, dlc + 2, deadline)) return false;
+      if ((serial_id & 0x07) != kSerialExtendedFrameFlag ||
+          payload[dlc] != '\r' || payload[dlc + 1] != '\n') {
+        found_a = false; continue;
+      }
+      frame = {};
+      frame.can_id = CAN_EFF_FLAG | (serial_id >> 3);
+      frame.can_dlc = dlc;
+      std::copy(payload, payload + dlc, frame.data);
+      return true;
+    }
+    return false;
   }
 
   int fd_{-1};
+  bool serial_mode_{false};
+  int receive_timeout_ms_{20};
   uint8_t master_id_;
   uint8_t motor_id_;
 };
@@ -159,7 +284,10 @@ class Rs03Can {
 class Rs03Node final : public rclcpp::Node {
  public:
   Rs03Node() : Node("rs03_current_torque") {
+    const auto transport = declare_parameter("transport", "serial");
     const auto iface = declare_parameter("can_interface", "can0");
+    const auto serial_device = declare_parameter("serial_device", "/dev/ttyUSB0");
+    const auto serial_baud = declare_parameter("serial_baud", 921600);
     const auto motor_id = declare_parameter("motor_id", 1);
     const auto master_id = declare_parameter("master_id", 255);
     mode_ = declare_parameter("control_mode", "current");
@@ -176,8 +304,12 @@ class Rs03Node final : public rclcpp::Node {
       throw std::invalid_argument("timeouts must be positive");
     if (mode_ != "current" && mode_ != "torque")
       throw std::invalid_argument("control_mode must be current or torque");
-    can_ = std::make_unique<Rs03Can>(iface, static_cast<uint8_t>(master_id),
-                                     static_cast<uint8_t>(motor_id), receive_timeout);
+    if (transport != "serial" && transport != "socketcan")
+      throw std::invalid_argument("transport must be serial or socketcan");
+    can_ = std::make_unique<Rs03Can>(
+        transport, iface, serial_device, serial_baud,
+        static_cast<uint8_t>(master_id), static_cast<uint8_t>(motor_id),
+        receive_timeout);
 
     command_sub_ = create_subscription<std_msgs::msg::Float32>(
         mode_ == "current" ? "~/current_command_a" : "~/torque_command_nm", 10,
@@ -189,15 +321,23 @@ class Rs03Node final : public rclcpp::Node {
     torque_pub_ = create_publisher<std_msgs::msg::Float32>("~/estimated_torque_nm", 10);
     timer_ = create_wall_timer(10ms, [this] { update(); });
 
+    can_->stop();
+    Rs03Can::Feedback probe{};
+    const bool motor_online = can_->receive_feedback(probe);
+    if (motor_online)
+      RCLCPP_INFO(get_logger(), "RS03 feedback received; transport is online");
+    else
+      RCLCPP_WARN(get_logger(), "no RS03 feedback after safe stop probe");
+
     if (auto_enable) {
-      can_->stop();
+      if (!motor_online)
+        throw std::runtime_error("refusing to enable: no valid RS03 feedback");
       can_->set_mode(mode_ == "current" ? 3 : 0);
       can_->enable();
       enabled_ = true;
       last_command_ = now();
     } else {
       RCLCPP_WARN(get_logger(), "auto_enable=false: motor remains stopped; set true only after bench checks");
-      can_->stop();
     }
   }
 

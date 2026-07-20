@@ -5,6 +5,11 @@
 - `current`：设置 `run_mode=3`，向 `0x7006 iq_ref` 直接写入单位为 A 的 `float32`。底层电流 PI 在驱动器内部运行。
 - `torque`：使用通信类型 1 的前馈力矩字段，位置/速度目标及 `Kp/Kd` 均设为 0。协议范围为 ±60 N·m。
 
+通信后端支持：
+
+- `transport: serial`：灵足 CH340 串口转 CAN，直接使用官方 `AT` 二进制帧，默认 `/dev/ttyUSB0`、921600 baud。
+- `transport: socketcan`：Canable/candleLight 等原生 SocketCAN 设备。
+
 状态帧中的力矩应视为驱动器反馈/估算力矩；手册没有说明 RS03 内置独立力矩传感器，因此这里没有实现“实际力矩传感器 + 外部 PID”的力矩闭环。
 
 ## 重要修正
@@ -32,7 +37,24 @@ sudo ip link set can0 txqueuelen 100
 sudo ip link set can0 up
 ```
 
-### WSL2 + 串口式 CAN 适配器
+### 灵足 CH340 串口转 CAN（当前默认）
+
+配置已经默认选择 `/dev/ttyUSB0`。该模式不使用 `slcand`，启动前必须停止
+占用串口的旧进程：
+
+```bash
+sudo pkill -x slcand 2>/dev/null || true
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch rs03_current_torque_control rs03_current_torque.launch.py
+```
+
+节点启动时只发送安全停止帧并等待反馈。看到
+`RS03 feedback received; transport is online` 才表示串口和 CAN 链路真正连通。
+没有有效反馈时，即使 `auto_enable=true`，节点也会拒绝使能。
+
+### WSL2 + SLCAN 兼容适配器
 
 如果 `lsusb` 能看到设备且出现 `/dev/ttyUSB0`，并且适配器固件支持
 SLCAN 协议，可运行：

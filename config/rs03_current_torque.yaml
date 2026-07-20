@@ -5,7 +5,7 @@ rs03_current_torque:
     serial_baud: 921600
     serial_debug: true           # disable after the first successful link test
     can_interface: can0         # used only when transport=socketcan
-    motor_id: 1
+    motor_id: 12
     master_id: 255
     control_mode: current       # current | torque
     auto_enable: false          # first bench test: keep false

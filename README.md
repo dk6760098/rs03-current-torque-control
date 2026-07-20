@@ -121,16 +121,24 @@ ros2 launch rs03_current_torque_control rs03_current_torque.launch.py
 电流模式命令：
 
 ```bash
-ros2 topic pub --once /rs03_current_torque/current_command_a std_msgs/msg/Float32 "{data: 0.2}"
+ros2 topic pub -r 20 /rs03_current_torque/current_command_a std_msgs/msg/Float32 "{data: 0.2}"
 ```
 
 直接力矩模式命令（先把 YAML 的 `control_mode` 改成 `torque`）：
 
 ```bash
-ros2 topic pub --once /rs03_current_torque/torque_command_nm std_msgs/msg/Float32 "{data: 0.5}"
+ros2 topic pub -r 20 /rs03_current_torque/torque_command_nm std_msgs/msg/Float32 "{data: 0.5}"
 ```
 
-命令必须持续刷新；超过 `command_timeout_s`（默认 100 ms）后输出自动归零。节点退出时会先发零命令，再发送停止帧。
+命令必须持续刷新；超过 `command_timeout_s`（默认 100 ms）后会归零、停机并锁定，
+需要重启节点才能再次使能。节点退出时也会先发零命令，再发送停止帧。
+
+读取单个反馈样本时使用 ROS2 自带的正常退出选项，不要用 Linux `timeout`
+强制终止 ROS2 CLI：
+
+```bash
+ros2 topic echo --once /rs03_current_torque/estimated_torque_nm
+```
 
 ## 与 PID 的关系
 

@@ -40,7 +40,10 @@ constexpr uint16_t kPositionAcceleration = 0x7025;
 constexpr float kProtocolCurrentMaxA = 43.0F;
 constexpr float kProtocolTorqueMaxNm = 60.0F;
 constexpr float kPositionMaxRad = 4.0F * static_cast<float>(M_PI);
-constexpr float kVelocityMaxRadS = 50.0F;
+// RS03 protocol Type-1 command / Type-2 feedback velocity mapping is
+// -20.0 .. +20.0 rad/s. Using the ±50 range from other motor variants makes
+// decoded feedback 2.5x too large and can cause false overspeed trips.
+constexpr float kVelocityMaxRadS = 20.0F;
 constexpr float kKpMax = 5000.0F;
 constexpr float kKdMax = 100.0F;
 constexpr uint8_t kSerialExtendedFrameFlag = 0x04;

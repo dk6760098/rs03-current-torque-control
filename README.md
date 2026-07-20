@@ -15,8 +15,10 @@
 
 ```bash
 cd ~/ros2_ws/src
-cp -r /path/to/rs03_current_torque_control .
+git clone https://github.com/dk6760098/rs03-current-torque-control.git \
+  rs03_current_torque_control
 cd ..
+source /opt/ros/humble/setup.bash
 colcon build --packages-select rs03_current_torque_control
 source install/setup.bash
 ```

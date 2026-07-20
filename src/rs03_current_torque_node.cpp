@@ -313,11 +313,18 @@ class Rs03Node final : public rclcpp::Node {
                                 0.0, static_cast<double>(kProtocolCurrentMaxA));
     max_torque_nm_ = std::clamp(declare_parameter("max_torque_nm", 2.0),
                                 0.0, static_cast<double>(kProtocolTorqueMaxNm));
+    current_slew_rate_ = declare_parameter("current_slew_rate_a_s", 0.5);
+    torque_slew_rate_ = declare_parameter("torque_slew_rate_nm_s", 1.0);
+    max_velocity_rad_s_ = declare_parameter("max_velocity_rad_s", 2.0);
+    max_temperature_c_ = declare_parameter("max_temperature_c", 60.0);
     const auto receive_timeout = declare_parameter("receive_timeout_ms", 20);
     if (motor_id < 0 || motor_id > 255 || master_id < 0 || master_id > 255)
       throw std::invalid_argument("motor_id and master_id must be in [0, 255]");
     if (timeout_s_ <= 0.0 || receive_timeout < 0)
       throw std::invalid_argument("timeouts must be positive");
+    if (current_slew_rate_ <= 0.0 || torque_slew_rate_ <= 0.0 ||
+        max_velocity_rad_s_ <= 0.0 || max_temperature_c_ <= 0.0)
+      throw std::invalid_argument("safety limits and slew rates must be positive");
     if (mode_ != "current" && mode_ != "torque")
       throw std::invalid_argument("control_mode must be current or torque");
     if (transport != "serial" && transport != "socketcan")
@@ -357,6 +364,7 @@ class Rs03Node final : public rclcpp::Node {
       can_->enable();
       enabled_ = true;
       last_command_ = now();
+      last_update_ = std::chrono::steady_clock::now();
     } else {
       RCLCPP_WARN(get_logger(), "auto_enable=false: motor remains stopped; set true only after bench checks");
     }
@@ -369,14 +377,29 @@ class Rs03Node final : public rclcpp::Node {
  private:
   void update() {
     if (!enabled_) return;
+    const auto update_time = std::chrono::steady_clock::now();
+    const double dt = std::clamp(
+        std::chrono::duration<double>(update_time - last_update_).count(),
+        0.0, 0.1);
+    last_update_ = update_time;
     const bool fresh = command_seen_ && (now() - last_command_).seconds() <= timeout_s_;
     const float requested = fresh ? command_ : 0.0F;
+    const float limit = mode_ == "current" ? static_cast<float>(max_current_a_)
+                                            : static_cast<float>(max_torque_nm_);
+    const float desired = std::clamp(requested, -limit, limit);
+    if (fresh) {
+      const float rate = mode_ == "current" ? static_cast<float>(current_slew_rate_)
+                                             : static_cast<float>(torque_slew_rate_);
+      const float max_step = rate * static_cast<float>(dt);
+      applied_command_ += std::clamp(desired - applied_command_, -max_step, max_step);
+    } else {
+      // The communication watchdog always wins over slew limiting.
+      applied_command_ = 0.0F;
+    }
     if (mode_ == "current")
-      can_->set_iq(std::clamp(requested, -static_cast<float>(max_current_a_),
-                              static_cast<float>(max_current_a_)));
+      can_->set_iq(applied_command_);
     else
-      can_->set_torque(std::clamp(requested, -static_cast<float>(max_torque_nm_),
-                                  static_cast<float>(max_torque_nm_)));
+      can_->set_torque(applied_command_);
     if (!fresh && command_seen_ && !timeout_reported_) {
       RCLCPP_ERROR(get_logger(), "command timeout: output forced to zero");
       timeout_reported_ = true;
@@ -387,6 +410,18 @@ class Rs03Node final : public rclcpp::Node {
       std_msgs::msg::Float32 msg;
       msg.data = fb.torque_nm;
       torque_pub_->publish(msg);
+      if (std::abs(fb.velocity_rad_s) > max_velocity_rad_s_ ||
+          fb.temperature_c > max_temperature_c_) {
+        if (mode_ == "current") can_->set_iq(0.0F); else can_->set_torque(0.0F);
+        can_->stop();
+        enabled_ = false;
+        applied_command_ = 0.0F;
+        RCLCPP_FATAL(get_logger(),
+                     "safety stop: velocity=%.3f rad/s (limit %.3f), "
+                     "temperature=%.1f C (limit %.1f)",
+                     fb.velocity_rad_s, max_velocity_rad_s_,
+                     fb.temperature_c, max_temperature_c_);
+      }
     }
   }
 
@@ -400,9 +435,12 @@ class Rs03Node final : public rclcpp::Node {
   std::unique_ptr<Rs03Can> can_;
   std::string mode_;
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
-  float command_{0.0F};
+  double current_slew_rate_{0.5}, torque_slew_rate_{1.0};
+  double max_velocity_rad_s_{2.0}, max_temperature_c_{60.0};
+  float command_{0.0F}, applied_command_{0.0F};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};
+  std::chrono::steady_clock::time_point last_update_{std::chrono::steady_clock::now()};
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr command_sub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr torque_pub_;
   rclcpp::TimerBase::SharedPtr timer_;

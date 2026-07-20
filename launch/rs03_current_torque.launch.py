@@ -18,6 +18,7 @@ def generate_launch_description():
                               choices=["current", "torque"]),
         DeclareLaunchArgument("max_current_a", default_value="0.5"),
         DeclareLaunchArgument("max_torque_nm", default_value="1.0"),
+        DeclareLaunchArgument("max_velocity_rad_s", default_value="2.0"),
         Node(
             package="rs03_current_torque_control",
             executable="rs03_current_torque_node",
@@ -32,6 +33,8 @@ def generate_launch_description():
                         LaunchConfiguration("max_current_a"), value_type=float),
                     "max_torque_nm": ParameterValue(
                         LaunchConfiguration("max_torque_nm"), value_type=float),
+                    "max_velocity_rad_s": ParameterValue(
+                        LaunchConfiguration("max_velocity_rad_s"), value_type=float),
                 },
             ],
             output="screen",

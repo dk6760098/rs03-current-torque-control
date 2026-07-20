@@ -132,7 +132,8 @@ ros2 topic pub -r 20 \
 
 正负方向必须先用小偏移确认。命令超时会停止驱动器，但不会发送“返回启动
 位置”的命令。位置误差超过 `position_tracking_error_rad`、连续超速或过温均会
-触发停机锁定。
+触发停机锁定。`position_current_limit_a` 默认把位置环可调用的电流限制为
+`0.5 A`。
 
 ### WSL2 + SLCAN 兼容适配器
 

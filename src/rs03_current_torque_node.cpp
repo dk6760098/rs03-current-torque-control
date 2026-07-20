@@ -146,8 +146,9 @@ class Rs03Can {
     set_float_parameter(kVelocityAcceleration, acceleration_rad_s2);
   }
 
-  void configure_position_pp(float speed_limit_rad_s,
+  void configure_position_pp(float current_limit_a, float speed_limit_rad_s,
                              float acceleration_rad_s2) {
+    set_float_parameter(kCurrentLimit, current_limit_a);
     set_float_parameter(kPositionSpeedLimit, speed_limit_rad_s);
     set_float_parameter(kPositionAcceleration, acceleration_rad_s2);
   }
@@ -346,6 +347,7 @@ class Rs03Node final : public rclcpp::Node {
     velocity_current_limit_a_ = declare_parameter("velocity_current_limit_a", 0.5);
     velocity_acceleration_rad_s2_ = declare_parameter("velocity_acceleration_rad_s2", 0.5);
     position_max_offset_rad_ = declare_parameter("position_max_offset_rad", 0.2);
+    position_current_limit_a_ = declare_parameter("position_current_limit_a", 0.5);
     position_speed_limit_rad_s_ = declare_parameter("position_speed_limit_rad_s", 0.2);
     position_acceleration_rad_s2_ = declare_parameter("position_acceleration_rad_s2", 0.5);
     position_tracking_error_rad_ = declare_parameter("position_tracking_error_rad", 0.5);
@@ -364,7 +366,8 @@ class Rs03Node final : public rclcpp::Node {
         velocity_slew_rate_ <= 0.0 || max_velocity_command_rad_s_ <= 0.0 ||
         velocity_current_limit_a_ <= 0.0 || velocity_current_limit_a_ > 43.0 ||
         velocity_acceleration_rad_s2_ <= 0.0 ||
-        position_max_offset_rad_ <= 0.0 || position_speed_limit_rad_s_ <= 0.0 ||
+        position_max_offset_rad_ <= 0.0 || position_current_limit_a_ <= 0.0 ||
+        position_current_limit_a_ > 43.0 || position_speed_limit_rad_s_ <= 0.0 ||
         position_acceleration_rad_s2_ <= 0.0 || position_tracking_error_rad_ <= 0.0 ||
         max_velocity_rad_s_ <= 0.0 || max_temperature_c_ <= 0.0)
       throw std::invalid_argument("safety limits and slew rates must be positive");
@@ -426,7 +429,8 @@ class Rs03Node final : public rclcpp::Node {
                                  static_cast<float>(velocity_acceleration_rad_s2_));
         can_->set_velocity(0.0F);
       } else if (mode_ == "position_pp") {
-        can_->configure_position_pp(static_cast<float>(position_speed_limit_rad_s_),
+        can_->configure_position_pp(static_cast<float>(position_current_limit_a_),
+                                    static_cast<float>(position_speed_limit_rad_s_),
                                     static_cast<float>(position_acceleration_rad_s2_));
         can_->set_position(startup_position_rad_);
       }
@@ -545,7 +549,8 @@ class Rs03Node final : public rclcpp::Node {
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
   double max_velocity_command_rad_s_{0.5}, velocity_current_limit_a_{0.5};
   double velocity_acceleration_rad_s2_{0.5};
-  double position_max_offset_rad_{0.2}, position_speed_limit_rad_s_{0.2};
+  double position_max_offset_rad_{0.2}, position_current_limit_a_{0.5};
+  double position_speed_limit_rad_s_{0.2};
   double position_acceleration_rad_s2_{0.5}, position_tracking_error_rad_{0.5};
   double current_slew_rate_{0.5}, torque_slew_rate_{1.0}, velocity_slew_rate_{0.5};
   double max_velocity_rad_s_{2.0}, max_temperature_c_{60.0};

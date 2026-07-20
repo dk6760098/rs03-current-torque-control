@@ -53,10 +53,11 @@ class Rs03Can {
  public:
   Rs03Can(const std::string &transport, const std::string &iface,
           const std::string &serial_device, int serial_baud,
-          uint8_t master_id, uint8_t motor_id, int receive_timeout_ms)
+          bool serial_debug, uint8_t master_id, uint8_t motor_id,
+          int receive_timeout_ms)
       : serial_mode_(transport == "serial"),
-        receive_timeout_ms_(receive_timeout_ms), master_id_(master_id),
-        motor_id_(motor_id) {
+        serial_debug_(serial_debug), receive_timeout_ms_(receive_timeout_ms),
+        master_id_(master_id), motor_id_(motor_id) {
     if (serial_mode_) {
       if (serial_baud != 921600)
         throw std::invalid_argument("the official CH340 transport currently requires serial_baud=921600");
@@ -208,6 +209,11 @@ class Rs03Can {
     packet[7 + frame.can_dlc] = '\r';
     packet[8 + frame.can_dlc] = '\n';
     const size_t length = 9 + frame.can_dlc;
+    if (serial_debug_) {
+      std::fprintf(stderr, "RS03 serial TX (%zu):", length);
+      for (size_t i = 0; i < length; ++i) std::fprintf(stderr, " %02X", packet[i]);
+      std::fprintf(stderr, "\n");
+    }
     size_t offset = 0;
     while (offset < length) {
       const ssize_t count = write(fd_, packet.data() + offset, length - offset);
@@ -234,7 +240,15 @@ class Rs03Can {
       if (ready == 0) return false;
       if (ready < 0) { if (errno == EINTR) continue; return false; }
       const ssize_t count = read(fd_, data + offset, length - offset);
-      if (count > 0) offset += static_cast<size_t>(count);
+      if (count > 0) {
+        if (serial_debug_) {
+          std::fprintf(stderr, "RS03 serial RX (%zd):", count);
+          for (ssize_t i = 0; i < count; ++i)
+            std::fprintf(stderr, " %02X", data[offset + static_cast<size_t>(i)]);
+          std::fprintf(stderr, "\n");
+        }
+        offset += static_cast<size_t>(count);
+      }
       else if (count < 0 && errno != EINTR && errno != EAGAIN) return false;
     }
     return offset == length;
@@ -276,6 +290,7 @@ class Rs03Can {
 
   int fd_{-1};
   bool serial_mode_{false};
+  bool serial_debug_{false};
   int receive_timeout_ms_{20};
   uint8_t master_id_;
   uint8_t motor_id_;
@@ -288,6 +303,7 @@ class Rs03Node final : public rclcpp::Node {
     const auto iface = declare_parameter("can_interface", "can0");
     const auto serial_device = declare_parameter("serial_device", "/dev/ttyUSB0");
     const auto serial_baud = declare_parameter("serial_baud", 921600);
+    const auto serial_debug = declare_parameter("serial_debug", false);
     const auto motor_id = declare_parameter("motor_id", 1);
     const auto master_id = declare_parameter("master_id", 255);
     mode_ = declare_parameter("control_mode", "current");
@@ -307,7 +323,7 @@ class Rs03Node final : public rclcpp::Node {
     if (transport != "serial" && transport != "socketcan")
       throw std::invalid_argument("transport must be serial or socketcan");
     can_ = std::make_unique<Rs03Can>(
-        transport, iface, serial_device, serial_baud,
+        transport, iface, serial_device, serial_baud, serial_debug,
         static_cast<uint8_t>(master_id), static_cast<uint8_t>(motor_id),
         receive_timeout);
 

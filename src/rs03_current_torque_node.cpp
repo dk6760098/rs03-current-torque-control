@@ -401,8 +401,13 @@ class Rs03Node final : public rclcpp::Node {
     else
       can_->set_torque(applied_command_);
     if (!fresh && command_seen_ && !timeout_reported_) {
-      RCLCPP_ERROR(get_logger(), "command timeout: output forced to zero");
+      can_->stop();
+      enabled_ = false;
       timeout_reported_ = true;
+      RCLCPP_FATAL(get_logger(),
+                   "command timeout: output forced to zero and motor stopped; "
+                   "restart node to re-enable");
+      return;
     } else if (fresh) timeout_reported_ = false;
 
     Rs03Can::Feedback fb{};

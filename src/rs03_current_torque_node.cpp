@@ -406,6 +406,15 @@ class Rs03Node final : public rclcpp::Node {
     max_torque_nm_ = std::clamp(declare_parameter("max_torque_nm", 2.0),
                                 0.0, static_cast<double>(kProtocolTorqueMaxNm));
     torque_demo_duration_s_ = declare_parameter("torque_demo_duration_s", 0.0);
+    torque_breakaway_boost_nm_ = declare_parameter("torque_breakaway_boost_nm", 0.0);
+    torque_breakaway_velocity_rad_s_ =
+        declare_parameter("torque_breakaway_velocity_rad_s", 0.12);
+    torque_breakaway_rearm_velocity_rad_s_ =
+        declare_parameter("torque_breakaway_rearm_velocity_rad_s", 0.05);
+    torque_breakaway_rearm_delay_s_ =
+        declare_parameter("torque_breakaway_rearm_delay_s", 0.30);
+    torque_breakaway_timeout_s_ =
+        declare_parameter("torque_breakaway_timeout_s", 2.0);
     torque_soft_velocity_start_rad_s_ =
         declare_parameter("torque_soft_velocity_start_rad_s", 0.0);
     torque_soft_velocity_limit_rad_s_ =
@@ -460,6 +469,17 @@ class Rs03Node final : public rclcpp::Node {
           torque_soft_velocity_limit_rad_s_ >= max_velocity_rad_s_)))
       throw std::invalid_argument(
           "torque soft velocity limits must satisfy 0 <= start < limit < max_velocity");
+    if (torque_breakaway_boost_nm_ < 0.0 ||
+        torque_breakaway_boost_nm_ > max_torque_nm_ ||
+        torque_breakaway_velocity_rad_s_ <= 0.0 ||
+        torque_breakaway_rearm_velocity_rad_s_ < 0.0 ||
+        torque_breakaway_rearm_velocity_rad_s_ >= torque_breakaway_velocity_rad_s_ ||
+        torque_breakaway_rearm_delay_s_ <= 0.0 ||
+        torque_breakaway_timeout_s_ <= 0.0 ||
+        (torque_breakaway_boost_nm_ > 0.0 &&
+         torque_soft_velocity_limit_rad_s_ > 0.0))
+      throw std::invalid_argument(
+          "breakaway compensation limits are invalid or conflict with the soft governor");
     if (torque_soft_brake_gain_nm_per_rad_s_ < 0.0 ||
         torque_soft_brake_max_nm_ < 0.0 ||
         torque_soft_brake_max_nm_ > max_torque_nm_ ||
@@ -643,12 +663,69 @@ class Rs03Node final : public rclcpp::Node {
     else if (mode_ == "velocity") limit = static_cast<float>(max_velocity_command_rad_s_);
     else if (mode_ == "position_pp") limit = static_cast<float>(position_max_offset_rad_);
     const float desired = std::clamp(requested, -limit, limit);
+    float control_desired = desired;
+    if (fresh && mode_ == "torque" && torque_breakaway_boost_nm_ > 0.0 &&
+        std::abs(desired) > 1e-4F) {
+      const int direction_sign = desired > 0.0F ? 1 : -1;
+      const float direction = static_cast<float>(direction_sign);
+      if (direction_sign != torque_breakaway_direction_) {
+        torque_breakaway_direction_ = direction_sign;
+        torque_breakaway_active_ = true;
+        torque_breakaway_elapsed_s_ = 0.0;
+        torque_breakaway_low_speed_s_ = 0.0;
+        RCLCPP_INFO(get_logger(), "breakaway boost armed: %.3f Nm",
+                    torque_breakaway_boost_nm_);
+      }
+      const float signed_speed = direction * filtered_velocity_rad_s_;
+      if (torque_breakaway_active_) {
+        torque_breakaway_elapsed_s_ += dt;
+        if (signed_speed >= static_cast<float>(torque_breakaway_velocity_rad_s_)) {
+          torque_breakaway_active_ = false;
+          torque_breakaway_elapsed_s_ = 0.0;
+          torque_breakaway_low_speed_s_ = 0.0;
+          RCLCPP_INFO(get_logger(),
+                      "breakaway complete at %.3f rad/s; returning to %.3f Nm",
+                      filtered_velocity_rad_s_, desired);
+        } else if (torque_breakaway_elapsed_s_ >= torque_breakaway_timeout_s_) {
+          send_zero_command();
+          can_->stop();
+          enabled_ = false;
+          applied_command_ = 0.0F;
+          RCLCPP_FATAL(get_logger(),
+                       "breakaway timeout: no motion after %.3f s; output forced "
+                       "to zero and motor stopped; restart node to re-enable",
+                       torque_breakaway_timeout_s_);
+          return;
+        }
+      } else {
+        if (signed_speed <=
+            static_cast<float>(torque_breakaway_rearm_velocity_rad_s_))
+          torque_breakaway_low_speed_s_ += dt;
+        else
+          torque_breakaway_low_speed_s_ = 0.0;
+        if (torque_breakaway_low_speed_s_ >= torque_breakaway_rearm_delay_s_) {
+          torque_breakaway_active_ = true;
+          torque_breakaway_elapsed_s_ = 0.0;
+          torque_breakaway_low_speed_s_ = 0.0;
+          RCLCPP_INFO(get_logger(), "breakaway boost re-armed after low speed");
+        }
+      }
+      if (torque_breakaway_active_)
+        control_desired = direction * std::max(
+            std::abs(desired), static_cast<float>(torque_breakaway_boost_nm_));
+    } else if (mode_ == "torque" && torque_breakaway_boost_nm_ > 0.0) {
+      torque_breakaway_active_ = false;
+      torque_breakaway_direction_ = 0;
+      torque_breakaway_elapsed_s_ = 0.0;
+      torque_breakaway_low_speed_s_ = 0.0;
+    }
     if (fresh && mode_ != "position_pp") {
       float rate = static_cast<float>(torque_slew_rate_);
       if (mode_ == "current") rate = static_cast<float>(current_slew_rate_);
       else if (mode_ == "velocity") rate = static_cast<float>(velocity_slew_rate_);
       const float max_step = rate * static_cast<float>(dt);
-      applied_command_ += std::clamp(desired - applied_command_, -max_step, max_step);
+      applied_command_ +=
+          std::clamp(control_desired - applied_command_, -max_step, max_step);
     } else if (fresh) {
       const float current_target = startup_position_rad_ + applied_command_;
       const float following_error = has_position_feedback_
@@ -785,6 +862,10 @@ class Rs03Node final : public rclcpp::Node {
   std::string mode_;
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
   double torque_demo_duration_s_{0.0};
+  double torque_breakaway_boost_nm_{0.0};
+  double torque_breakaway_velocity_rad_s_{0.12};
+  double torque_breakaway_rearm_velocity_rad_s_{0.05};
+  double torque_breakaway_rearm_delay_s_{0.30}, torque_breakaway_timeout_s_{2.0};
   double torque_soft_velocity_start_rad_s_{0.0};
   double torque_soft_velocity_limit_rad_s_{0.0};
   double torque_soft_brake_gain_nm_per_rad_s_{0.0};
@@ -802,11 +883,14 @@ class Rs03Node final : public rclcpp::Node {
   int64_t velocity_trip_samples_{5};
   int64_t velocity_trip_count_{0};
   int torque_demo_direction_{0};
+  int torque_breakaway_direction_{0};
   float command_{0.0F}, applied_command_{0.0F}, startup_position_rad_{0.0F};
   float last_position_feedback_rad_{0.0F}, last_velocity_feedback_rad_s_{0.0F};
   float filtered_velocity_rad_s_{0.0F};
   bool has_position_feedback_{false};
   bool torque_motion_started_{false};
+  bool torque_breakaway_active_{false};
+  double torque_breakaway_elapsed_s_{0.0}, torque_breakaway_low_speed_s_{0.0};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};
   rclcpp::Time torque_demo_start_{0, 0, RCL_ROS_TIME};

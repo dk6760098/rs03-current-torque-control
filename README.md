@@ -99,6 +99,13 @@ ros2 topic pub -r 20 \
 命令开始计时；到时后归零、发送停止帧并锁定。计时保护不会取代
 `max_velocity_rad_s`：任一条件先满足都会停机，防止电机在计时结束前超速。
 
+`torque_breakaway_boost_nm` 启用起动力矩补偿：话题命令仍是正常运行力矩，静止
+起动时临时提升到该参数；过滤速度达到 `torque_breakaway_velocity_rad_s` 后，
+通过原有力矩斜坡降回话题命令。运行中速度持续低于
+`torque_breakaway_rearm_velocity_rad_s` 达到 `torque_breakaway_rearm_delay_s` 后会
+重新启用补偿。补偿连续超过 `torque_breakaway_timeout_s` 仍未起动则停机，避免
+长时间堵转。起动力矩补偿与软速度监管不能同时启用。
+
 可观察的反馈话题包括：
 
 ```text

@@ -20,6 +20,11 @@ def generate_launch_description():
         DeclareLaunchArgument("max_current_a", default_value="0.5"),
         DeclareLaunchArgument("max_torque_nm", default_value="1.0"),
         DeclareLaunchArgument("torque_demo_duration_s", default_value="0.0"),
+        DeclareLaunchArgument("torque_breakaway_boost_nm", default_value="0.0"),
+        DeclareLaunchArgument("torque_breakaway_velocity_rad_s", default_value="0.12"),
+        DeclareLaunchArgument("torque_breakaway_rearm_velocity_rad_s", default_value="0.05"),
+        DeclareLaunchArgument("torque_breakaway_rearm_delay_s", default_value="0.30"),
+        DeclareLaunchArgument("torque_breakaway_timeout_s", default_value="2.0"),
         DeclareLaunchArgument("torque_soft_velocity_start_rad_s", default_value="0.0"),
         DeclareLaunchArgument("torque_soft_velocity_limit_rad_s", default_value="0.0"),
         DeclareLaunchArgument("torque_soft_brake_gain_nm_per_rad_s", default_value="0.0"),
@@ -53,6 +58,16 @@ def generate_launch_description():
                         LaunchConfiguration("max_torque_nm"), value_type=float),
                     "torque_demo_duration_s": ParameterValue(
                         LaunchConfiguration("torque_demo_duration_s"), value_type=float),
+                    "torque_breakaway_boost_nm": ParameterValue(
+                        LaunchConfiguration("torque_breakaway_boost_nm"), value_type=float),
+                    "torque_breakaway_velocity_rad_s": ParameterValue(
+                        LaunchConfiguration("torque_breakaway_velocity_rad_s"), value_type=float),
+                    "torque_breakaway_rearm_velocity_rad_s": ParameterValue(
+                        LaunchConfiguration("torque_breakaway_rearm_velocity_rad_s"), value_type=float),
+                    "torque_breakaway_rearm_delay_s": ParameterValue(
+                        LaunchConfiguration("torque_breakaway_rearm_delay_s"), value_type=float),
+                    "torque_breakaway_timeout_s": ParameterValue(
+                        LaunchConfiguration("torque_breakaway_timeout_s"), value_type=float),
                     "torque_soft_velocity_start_rad_s": ParameterValue(
                         LaunchConfiguration("torque_soft_velocity_start_rad_s"), value_type=float),
                     "torque_soft_velocity_limit_rad_s": ParameterValue(

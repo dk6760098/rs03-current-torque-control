@@ -648,25 +648,38 @@ class Rs03Node final : public rclcpp::Node {
     }
     float sent_command = applied_command_;
     if (mode_ == "torque" && torque_soft_velocity_limit_rad_s_ > 0.0 &&
-        sent_command * filtered_velocity_rad_s_ > 0.0F) {
-      const float speed = std::abs(filtered_velocity_rad_s_);
-      const float soft_start =
-          static_cast<float>(torque_soft_velocity_start_rad_s_);
-      const float soft_limit =
-          static_cast<float>(torque_soft_velocity_limit_rad_s_);
-      if (speed <= soft_limit) {
-        const float scale = std::clamp(
-            (soft_limit - speed) / (soft_limit - soft_start), 0.0F, 1.0F);
-        sent_command *= scale;
-      } else if (torque_soft_brake_max_nm_ > 0.0) {
-        const float brake = std::min(
-            static_cast<float>(torque_soft_brake_max_nm_),
-            static_cast<float>(torque_soft_brake_gain_nm_per_rad_s_) *
-                (speed - soft_limit));
-        sent_command = -std::copysign(brake, filtered_velocity_rad_s_);
-      } else {
-        sent_command = 0.0F;
+        std::abs(applied_command_) > 1e-4F) {
+      const float direction = std::copysign(1.0F, applied_command_);
+      const int command_direction = applied_command_ > 0.0F ? 1 : -1;
+      if (command_direction != torque_demo_direction_) {
+        torque_demo_direction_ = command_direction;
+        torque_motion_started_ = false;
       }
+      const float signed_speed = direction * filtered_velocity_rad_s_;
+      if (!torque_motion_started_ &&
+          signed_speed >= static_cast<float>(torque_soft_velocity_start_rad_s_)) {
+        torque_motion_started_ = true;
+        RCLCPP_INFO(get_logger(),
+                    "torque demo entered governed phase at %.3f rad/s",
+                    filtered_velocity_rad_s_);
+      }
+      if (torque_motion_started_ && torque_soft_brake_gain_nm_per_rad_s_ > 0.0) {
+        // After breakaway, use one continuous proportional law instead of
+        // switching between full positive torque and a fixed braking torque.
+        // The latched phase prevents a temporary hand obstruction from
+        // re-arming the full breakaway torque.
+        const float speed_error =
+            static_cast<float>(torque_soft_velocity_limit_rad_s_) - signed_speed;
+        const float governed_torque =
+            static_cast<float>(torque_soft_brake_gain_nm_per_rad_s_) * speed_error;
+        sent_command = direction * std::clamp(
+            governed_torque,
+            -static_cast<float>(torque_soft_brake_max_nm_),
+            std::abs(applied_command_));
+      }
+    } else if (mode_ == "torque") {
+      torque_motion_started_ = false;
+      torque_demo_direction_ = 0;
     }
     if (mode_ == "current") {
       can_->set_iq(applied_command_);
@@ -764,10 +777,12 @@ class Rs03Node final : public rclcpp::Node {
   double max_velocity_rad_s_{2.0}, max_temperature_c_{60.0};
   int64_t velocity_trip_samples_{5};
   int64_t velocity_trip_count_{0};
+  int torque_demo_direction_{0};
   float command_{0.0F}, applied_command_{0.0F}, startup_position_rad_{0.0F};
   float last_position_feedback_rad_{0.0F}, last_velocity_feedback_rad_s_{0.0F};
   float filtered_velocity_rad_s_{0.0F};
   bool has_position_feedback_{false};
+  bool torque_motion_started_{false};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_update_{std::chrono::steady_clock::now()};

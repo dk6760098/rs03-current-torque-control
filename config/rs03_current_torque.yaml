@@ -14,6 +14,9 @@ rs03_current_torque:
     max_torque_nm: 1.0          # initial bench limit; RS03 protocol limit is 60 Nm
     torque_soft_velocity_start_rad_s: 0.0  # 0 disables the optional torque demo governor
     torque_soft_velocity_limit_rad_s: 0.0
+    torque_soft_brake_gain_nm_per_rad_s: 0.0
+    torque_soft_brake_max_nm: 0.0
+    torque_velocity_filter_alpha: 0.2
     max_velocity_command_rad_s: 0.5
     velocity_current_limit_a: 0.5
     velocity_acceleration_rad_s2: 0.5

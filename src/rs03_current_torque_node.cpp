@@ -409,6 +409,12 @@ class Rs03Node final : public rclcpp::Node {
         declare_parameter("torque_soft_velocity_start_rad_s", 0.0);
     torque_soft_velocity_limit_rad_s_ =
         declare_parameter("torque_soft_velocity_limit_rad_s", 0.0);
+    torque_soft_brake_gain_nm_per_rad_s_ =
+        declare_parameter("torque_soft_brake_gain_nm_per_rad_s", 0.0);
+    torque_soft_brake_max_nm_ =
+        declare_parameter("torque_soft_brake_max_nm", 0.0);
+    torque_velocity_filter_alpha_ =
+        declare_parameter("torque_velocity_filter_alpha", 0.2);
     max_velocity_command_rad_s_ = declare_parameter("max_velocity_command_rad_s", 0.5);
     velocity_current_limit_a_ = declare_parameter("velocity_current_limit_a", 0.5);
     velocity_acceleration_rad_s2_ = declare_parameter("velocity_acceleration_rad_s2", 0.5);
@@ -451,6 +457,15 @@ class Rs03Node final : public rclcpp::Node {
           torque_soft_velocity_limit_rad_s_ >= max_velocity_rad_s_)))
       throw std::invalid_argument(
           "torque soft velocity limits must satisfy 0 <= start < limit < max_velocity");
+    if (torque_soft_brake_gain_nm_per_rad_s_ < 0.0 ||
+        torque_soft_brake_max_nm_ < 0.0 ||
+        torque_soft_brake_max_nm_ > max_torque_nm_ ||
+        torque_velocity_filter_alpha_ <= 0.0 ||
+        torque_velocity_filter_alpha_ > 1.0 ||
+        ((torque_soft_brake_gain_nm_per_rad_s_ == 0.0) !=
+         (torque_soft_brake_max_nm_ == 0.0)))
+      throw std::invalid_argument(
+          "torque brake gain/max must both be zero or positive; filter alpha must be in (0, 1]");
     if (mode_ != "current" && mode_ != "torque" && mode_ != "velocity" &&
         mode_ != "position_pp")
       throw std::invalid_argument(
@@ -516,6 +531,7 @@ class Rs03Node final : public rclcpp::Node {
       startup_position_rad_ = probe.position_rad;
       last_position_feedback_rad_ = probe.position_rad;
       last_velocity_feedback_rad_s_ = probe.velocity_rad_s;
+      filtered_velocity_rad_s_ = probe.velocity_rad_s;
       has_position_feedback_ = true;
       RCLCPP_INFO(get_logger(),
                   "RS03 feedback received: position=%.3f rad, velocity=%.3f rad/s, "
@@ -632,15 +648,25 @@ class Rs03Node final : public rclcpp::Node {
     }
     float sent_command = applied_command_;
     if (mode_ == "torque" && torque_soft_velocity_limit_rad_s_ > 0.0 &&
-        sent_command * last_velocity_feedback_rad_s_ > 0.0F) {
-      const float speed = std::abs(last_velocity_feedback_rad_s_);
+        sent_command * filtered_velocity_rad_s_ > 0.0F) {
+      const float speed = std::abs(filtered_velocity_rad_s_);
       const float soft_start =
           static_cast<float>(torque_soft_velocity_start_rad_s_);
       const float soft_limit =
           static_cast<float>(torque_soft_velocity_limit_rad_s_);
-      const float scale = std::clamp(
-          (soft_limit - speed) / (soft_limit - soft_start), 0.0F, 1.0F);
-      sent_command *= scale;
+      if (speed <= soft_limit) {
+        const float scale = std::clamp(
+            (soft_limit - speed) / (soft_limit - soft_start), 0.0F, 1.0F);
+        sent_command *= scale;
+      } else if (torque_soft_brake_max_nm_ > 0.0) {
+        const float brake = std::min(
+            static_cast<float>(torque_soft_brake_max_nm_),
+            static_cast<float>(torque_soft_brake_gain_nm_per_rad_s_) *
+                (speed - soft_limit));
+        sent_command = -std::copysign(brake, filtered_velocity_rad_s_);
+      } else {
+        sent_command = 0.0F;
+      }
     }
     if (mode_ == "current") {
       can_->set_iq(applied_command_);
@@ -657,6 +683,8 @@ class Rs03Node final : public rclcpp::Node {
     if (can_->receive_feedback(fb)) {
       last_position_feedback_rad_ = fb.position_rad;
       last_velocity_feedback_rad_s_ = fb.velocity_rad_s;
+      filtered_velocity_rad_s_ += static_cast<float>(torque_velocity_filter_alpha_) *
+          (fb.velocity_rad_s - filtered_velocity_rad_s_);
       has_position_feedback_ = true;
       std_msgs::msg::Float32 msg;
       msg.data = fb.torque_nm;
@@ -672,9 +700,9 @@ class Rs03Node final : public rclcpp::Node {
         RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 1000,
             "torque command: requested=%.3f Nm, ramped=%.3f Nm, sent=%.3f Nm, "
-            "feedback=%.3f Nm, velocity=%.3f rad/s",
+            "feedback=%.3f Nm, velocity=%.3f rad/s, filtered_velocity=%.3f rad/s",
             desired, applied_command_, sent_command, fb.torque_nm,
-            fb.velocity_rad_s);
+            fb.velocity_rad_s, filtered_velocity_rad_s_);
       }
 
       if (std::abs(fb.velocity_rad_s) > max_velocity_rad_s_)
@@ -723,6 +751,8 @@ class Rs03Node final : public rclcpp::Node {
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
   double torque_soft_velocity_start_rad_s_{0.0};
   double torque_soft_velocity_limit_rad_s_{0.0};
+  double torque_soft_brake_gain_nm_per_rad_s_{0.0};
+  double torque_soft_brake_max_nm_{0.0}, torque_velocity_filter_alpha_{0.2};
   bool position_waiting_for_command_{false};
   double max_velocity_command_rad_s_{0.5}, velocity_current_limit_a_{0.5};
   double velocity_acceleration_rad_s2_{0.5};
@@ -736,6 +766,7 @@ class Rs03Node final : public rclcpp::Node {
   int64_t velocity_trip_count_{0};
   float command_{0.0F}, applied_command_{0.0F}, startup_position_rad_{0.0F};
   float last_position_feedback_rad_{0.0F}, last_velocity_feedback_rad_s_{0.0F};
+  float filtered_velocity_rad_s_{0.0F};
   bool has_position_feedback_{false};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};

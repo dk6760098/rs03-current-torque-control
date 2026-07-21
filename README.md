@@ -85,6 +85,11 @@ ros2 topic pub -r 20 \
 仍可用于减速。启用后高速区属于带速度调节的力矩演示，不再是严格恒力矩；
 `max_velocity_rad_s` 硬停机保护仍然有效，并且必须高于软上限。
 
+若同时设置 `torque_soft_brake_gain_nm_per_rad_s` 和
+`torque_soft_brake_max_nm`，速度超过软上限后会施加有限的反向制动力，而不是
+只把正向力矩降为零。`torque_velocity_filter_alpha` 对速度反馈进行低通滤波，
+减少低速编码器噪声导致的力矩跳变。主动制动仅用于受控演示，不能替代硬件急停。
+
 可观察的反馈话题包括：
 
 ```text

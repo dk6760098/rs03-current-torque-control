@@ -23,6 +23,8 @@ def generate_launch_description():
         DeclareLaunchArgument("position_current_limit_a", default_value="0.5"),
         DeclareLaunchArgument("position_speed_limit_rad_s", default_value="0.2"),
         DeclareLaunchArgument("position_acceleration_rad_s2", default_value="0.5"),
+        DeclareLaunchArgument("position_slew_rate_rad_s", default_value="0.05"),
+        DeclareLaunchArgument("position_ramp_max_error_rad", default_value="0.03"),
         DeclareLaunchArgument("position_tracking_error_rad", default_value="0.5"),
         DeclareLaunchArgument("max_velocity_rad_s", default_value="2.0"),
         Node(
@@ -49,6 +51,10 @@ def generate_launch_description():
                         LaunchConfiguration("position_speed_limit_rad_s"), value_type=float),
                     "position_acceleration_rad_s2": ParameterValue(
                         LaunchConfiguration("position_acceleration_rad_s2"), value_type=float),
+                    "position_slew_rate_rad_s": ParameterValue(
+                        LaunchConfiguration("position_slew_rate_rad_s"), value_type=float),
+                    "position_ramp_max_error_rad": ParameterValue(
+                        LaunchConfiguration("position_ramp_max_error_rad"), value_type=float),
                     "position_tracking_error_rad": ParameterValue(
                         LaunchConfiguration("position_tracking_error_rad"), value_type=float),
                     "max_velocity_rad_s": ParameterValue(

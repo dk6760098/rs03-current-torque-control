@@ -387,6 +387,9 @@ class Rs03Node final : public rclcpp::Node {
     position_current_limit_a_ = declare_parameter("position_current_limit_a", 0.5);
     position_speed_limit_rad_s_ = declare_parameter("position_speed_limit_rad_s", 0.2);
     position_acceleration_rad_s2_ = declare_parameter("position_acceleration_rad_s2", 0.5);
+    position_slew_rate_rad_s_ = declare_parameter("position_slew_rate_rad_s", 0.05);
+    position_ramp_max_error_rad_ =
+        declare_parameter("position_ramp_max_error_rad", 0.03);
     position_tracking_error_rad_ = declare_parameter("position_tracking_error_rad", 0.5);
     current_slew_rate_ = declare_parameter("current_slew_rate_a_s", 0.5);
     torque_slew_rate_ = declare_parameter("torque_slew_rate_nm_s", 1.0);
@@ -405,7 +408,9 @@ class Rs03Node final : public rclcpp::Node {
         velocity_acceleration_rad_s2_ <= 0.0 ||
         position_max_offset_rad_ <= 0.0 || position_current_limit_a_ <= 0.0 ||
         position_current_limit_a_ > 43.0 || position_speed_limit_rad_s_ <= 0.0 ||
-        position_acceleration_rad_s2_ <= 0.0 || position_tracking_error_rad_ <= 0.0 ||
+        position_acceleration_rad_s2_ <= 0.0 || position_slew_rate_rad_s_ <= 0.0 ||
+        position_ramp_max_error_rad_ <= 0.0 || position_tracking_error_rad_ <= 0.0 ||
+        position_ramp_max_error_rad_ >= position_tracking_error_rad_ ||
         max_velocity_rad_s_ <= 0.0 || max_temperature_c_ <= 0.0)
       throw std::invalid_argument("safety limits and slew rates must be positive");
     if (velocity_trip_samples_ < 1)
@@ -439,7 +444,7 @@ class Rs03Node final : public rclcpp::Node {
             const float offset = std::clamp(
                 command_, -static_cast<float>(position_max_offset_rad_),
                 static_cast<float>(position_max_offset_rad_));
-            applied_command_ = offset;
+            applied_command_ = 0.0F;
             // Clear any stale PP target before enabling. RS03 PP mode applies
             // vel_max/acc_set/loc_ref after enable, so write the real target
             // again only after the motor is enabled.
@@ -449,7 +454,7 @@ class Rs03Node final : public rclcpp::Node {
                 static_cast<float>(position_current_limit_a_),
                 static_cast<float>(position_speed_limit_rad_s_),
                 static_cast<float>(position_acceleration_rad_s2_));
-            can_->set_position(startup_position_rad_ + offset);
+            can_->set_position(startup_position_rad_);
             enabled_ = true;
             position_waiting_for_command_ = false;
             last_update_ = std::chrono::steady_clock::now();
@@ -470,6 +475,8 @@ class Rs03Node final : public rclcpp::Node {
     const bool motor_online = can_->receive_feedback(probe);
     if (motor_online) {
       startup_position_rad_ = probe.position_rad;
+      last_position_feedback_rad_ = probe.position_rad;
+      has_position_feedback_ = true;
       RCLCPP_INFO(get_logger(),
                   "RS03 feedback received: position=%.3f rad, velocity=%.3f rad/s, "
                   "estimated_torque=%.3f Nm, temperature=%.1f C",
@@ -558,7 +565,19 @@ class Rs03Node final : public rclcpp::Node {
       const float max_step = rate * static_cast<float>(dt);
       applied_command_ += std::clamp(desired - applied_command_, -max_step, max_step);
     } else if (fresh) {
-      applied_command_ = desired;
+      const float current_target = startup_position_rad_ + applied_command_;
+      const float following_error = has_position_feedback_
+          ? std::abs(cyclic_position_error(current_target,
+                                           last_position_feedback_rad_))
+          : 0.0F;
+      // Do not let a slowly ramped command run far ahead of a stuck shaft.
+      // Resume the ramp only after the motor catches up with the current target.
+      if (!has_position_feedback_ ||
+          following_error <= static_cast<float>(position_ramp_max_error_rad_)) {
+        const float max_step = static_cast<float>(position_slew_rate_rad_s_ * dt);
+        applied_command_ +=
+            std::clamp(desired - applied_command_, -max_step, max_step);
+      }
     } else {
       // The communication watchdog always wins over slew limiting.
       applied_command_ = 0.0F;
@@ -575,6 +594,8 @@ class Rs03Node final : public rclcpp::Node {
 
     Rs03Can::Feedback fb{};
     if (can_->receive_feedback(fb)) {
+      last_position_feedback_rad_ = fb.position_rad;
+      has_position_feedback_ = true;
       std_msgs::msg::Float32 msg;
       msg.data = fb.torque_nm;
       torque_pub_->publish(msg);
@@ -634,12 +655,15 @@ class Rs03Node final : public rclcpp::Node {
   double velocity_acceleration_rad_s2_{0.5};
   double position_max_offset_rad_{0.2}, position_current_limit_a_{0.5};
   double position_speed_limit_rad_s_{0.2};
-  double position_acceleration_rad_s2_{0.5}, position_tracking_error_rad_{0.5};
+  double position_acceleration_rad_s2_{0.5}, position_slew_rate_rad_s_{0.05};
+  double position_ramp_max_error_rad_{0.03}, position_tracking_error_rad_{0.5};
   double current_slew_rate_{0.5}, torque_slew_rate_{1.0}, velocity_slew_rate_{0.5};
   double max_velocity_rad_s_{2.0}, max_temperature_c_{60.0};
   int64_t velocity_trip_samples_{5};
   int64_t velocity_trip_count_{0};
   float command_{0.0F}, applied_command_{0.0F}, startup_position_rad_{0.0F};
+  float last_position_feedback_rad_{0.0F};
+  bool has_position_feedback_{false};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_update_{std::chrono::steady_clock::now()};

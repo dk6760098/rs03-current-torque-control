@@ -23,6 +23,7 @@ def generate_launch_description():
         DeclareLaunchArgument("torque_soft_velocity_limit_rad_s", default_value="0.0"),
         DeclareLaunchArgument("torque_soft_brake_gain_nm_per_rad_s", default_value="0.0"),
         DeclareLaunchArgument("torque_soft_brake_max_nm", default_value="0.0"),
+        DeclareLaunchArgument("torque_speed_feedforward_nm", default_value="0.0"),
         DeclareLaunchArgument("torque_velocity_filter_alpha", default_value="0.2"),
         DeclareLaunchArgument("max_velocity_command_rad_s", default_value="0.5"),
         DeclareLaunchArgument("position_max_offset_rad", default_value="0.2"),
@@ -57,6 +58,8 @@ def generate_launch_description():
                         LaunchConfiguration("torque_soft_brake_gain_nm_per_rad_s"), value_type=float),
                     "torque_soft_brake_max_nm": ParameterValue(
                         LaunchConfiguration("torque_soft_brake_max_nm"), value_type=float),
+                    "torque_speed_feedforward_nm": ParameterValue(
+                        LaunchConfiguration("torque_speed_feedforward_nm"), value_type=float),
                     "torque_velocity_filter_alpha": ParameterValue(
                         LaunchConfiguration("torque_velocity_filter_alpha"), value_type=float),
                     "max_velocity_command_rad_s": ParameterValue(

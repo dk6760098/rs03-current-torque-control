@@ -413,6 +413,8 @@ class Rs03Node final : public rclcpp::Node {
         declare_parameter("torque_soft_brake_gain_nm_per_rad_s", 0.0);
     torque_soft_brake_max_nm_ =
         declare_parameter("torque_soft_brake_max_nm", 0.0);
+    torque_speed_feedforward_nm_ =
+        declare_parameter("torque_speed_feedforward_nm", 0.0);
     torque_velocity_filter_alpha_ =
         declare_parameter("torque_velocity_filter_alpha", 0.2);
     max_velocity_command_rad_s_ = declare_parameter("max_velocity_command_rad_s", 0.5);
@@ -460,6 +462,8 @@ class Rs03Node final : public rclcpp::Node {
     if (torque_soft_brake_gain_nm_per_rad_s_ < 0.0 ||
         torque_soft_brake_max_nm_ < 0.0 ||
         torque_soft_brake_max_nm_ > max_torque_nm_ ||
+        torque_speed_feedforward_nm_ < 0.0 ||
+        torque_speed_feedforward_nm_ > max_torque_nm_ ||
         torque_velocity_filter_alpha_ <= 0.0 ||
         torque_velocity_filter_alpha_ > 1.0 ||
         ((torque_soft_brake_gain_nm_per_rad_s_ == 0.0) !=
@@ -671,6 +675,7 @@ class Rs03Node final : public rclcpp::Node {
         const float speed_error =
             static_cast<float>(torque_soft_velocity_limit_rad_s_) - signed_speed;
         const float governed_torque =
+            static_cast<float>(torque_speed_feedforward_nm_) +
             static_cast<float>(torque_soft_brake_gain_nm_per_rad_s_) * speed_error;
         sent_command = direction * std::clamp(
             governed_torque,
@@ -765,7 +770,8 @@ class Rs03Node final : public rclcpp::Node {
   double torque_soft_velocity_start_rad_s_{0.0};
   double torque_soft_velocity_limit_rad_s_{0.0};
   double torque_soft_brake_gain_nm_per_rad_s_{0.0};
-  double torque_soft_brake_max_nm_{0.0}, torque_velocity_filter_alpha_{0.2};
+  double torque_soft_brake_max_nm_{0.0}, torque_speed_feedforward_nm_{0.0};
+  double torque_velocity_filter_alpha_{0.2};
   bool position_waiting_for_command_{false};
   double max_velocity_command_rad_s_{0.5}, velocity_current_limit_a_{0.5};
   double velocity_acceleration_rad_s2_{0.5};

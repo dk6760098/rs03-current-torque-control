@@ -405,6 +405,7 @@ class Rs03Node final : public rclcpp::Node {
                                 0.0, static_cast<double>(kProtocolCurrentMaxA));
     max_torque_nm_ = std::clamp(declare_parameter("max_torque_nm", 2.0),
                                 0.0, static_cast<double>(kProtocolTorqueMaxNm));
+    torque_demo_duration_s_ = declare_parameter("torque_demo_duration_s", 0.0);
     torque_soft_velocity_start_rad_s_ =
         declare_parameter("torque_soft_velocity_start_rad_s", 0.0);
     torque_soft_velocity_limit_rad_s_ =
@@ -437,7 +438,7 @@ class Rs03Node final : public rclcpp::Node {
     const auto receive_timeout = declare_parameter("receive_timeout_ms", 20);
     if (motor_id < 0 || motor_id > 255 || master_id < 0 || master_id > 255)
       throw std::invalid_argument("motor_id and master_id must be in [0, 255]");
-    if (timeout_s_ <= 0.0 || receive_timeout < 0)
+    if (timeout_s_ <= 0.0 || receive_timeout < 0 || torque_demo_duration_s_ < 0.0)
       throw std::invalid_argument("timeouts must be positive");
     if (current_slew_rate_ <= 0.0 || torque_slew_rate_ <= 0.0 ||
         velocity_slew_rate_ <= 0.0 || max_velocity_command_rad_s_ <= 0.0 ||
@@ -492,11 +493,14 @@ class Rs03Node final : public rclcpp::Node {
             RCLCPP_ERROR(get_logger(), "rejected non-finite command");
             return;
           }
-          if (!command_seen_)
+          const bool first_command = !command_seen_;
+          if (first_command)
             RCLCPP_INFO(get_logger(), "first %s command received: %.3f",
                         mode_.c_str(), msg->data);
           command_ = msg->data;
           last_command_ = now();
+          if (first_command && mode_ == "torque" && torque_demo_duration_s_ > 0.0)
+            torque_demo_start_ = last_command_;
           command_seen_ = true;
           if (position_waiting_for_command_) {
             const float offset = std::clamp(
@@ -603,12 +607,25 @@ class Rs03Node final : public rclcpp::Node {
  private:
   void update() {
     if (!enabled_) return;
+    const auto ros_now = now();
+    if (mode_ == "torque" && command_seen_ && torque_demo_duration_s_ > 0.0 &&
+        (ros_now - torque_demo_start_).seconds() >= torque_demo_duration_s_) {
+      send_zero_command();
+      can_->stop();
+      enabled_ = false;
+      applied_command_ = 0.0F;
+      RCLCPP_FATAL(get_logger(),
+                   "torque demo time limit reached: %.3f s; output forced to zero "
+                   "and motor stopped; restart node to re-enable",
+                   torque_demo_duration_s_);
+      return;
+    }
     const auto update_time = std::chrono::steady_clock::now();
     const double dt = std::clamp(
         std::chrono::duration<double>(update_time - last_update_).count(),
         0.0, 0.1);
     last_update_ = update_time;
-    const bool fresh = command_seen_ && (now() - last_command_).seconds() <= timeout_s_;
+    const bool fresh = command_seen_ && (ros_now - last_command_).seconds() <= timeout_s_;
     if (!fresh && command_seen_ && !timeout_reported_) {
       send_zero_command();
       can_->stop();
@@ -767,6 +784,7 @@ class Rs03Node final : public rclcpp::Node {
   std::unique_ptr<Rs03Can> can_;
   std::string mode_;
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
+  double torque_demo_duration_s_{0.0};
   double torque_soft_velocity_start_rad_s_{0.0};
   double torque_soft_velocity_limit_rad_s_{0.0};
   double torque_soft_brake_gain_nm_per_rad_s_{0.0};
@@ -791,6 +809,7 @@ class Rs03Node final : public rclcpp::Node {
   bool torque_motion_started_{false};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time torque_demo_start_{0, 0, RCL_ROS_TIME};
   std::chrono::steady_clock::time_point last_update_{std::chrono::steady_clock::now()};
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr command_sub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr torque_pub_;

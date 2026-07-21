@@ -199,6 +199,31 @@ class Rs03Can {
     return false;
   }
 
+  bool read_u8_parameter(uint16_t index, uint8_t &value) {
+    std::array<uint8_t, 8> request{};
+    request[0] = static_cast<uint8_t>(index & 0xff);
+    request[1] = static_cast<uint8_t>(index >> 8);
+    send(kTypeReadParam, master_id_, request);
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(receive_timeout_ms_);
+    while (std::chrono::steady_clock::now() < deadline) {
+      can_frame frame{};
+      if (!read_frame(frame, deadline)) return false;
+      if (!(frame.can_id & CAN_EFF_FLAG) || frame.can_dlc < 8) continue;
+      const uint32_t id = frame.can_id & CAN_EFF_MASK;
+      if (((id >> 24) & 0x1f) != kTypeReadParam ||
+          (id & 0xff) != master_id_ || ((id >> 8) & 0xff) != motor_id_)
+        continue;
+      const uint16_t response_index =
+          static_cast<uint16_t>(frame.data[0]) |
+          (static_cast<uint16_t>(frame.data[1]) << 8);
+      if (response_index != index) continue;
+      value = frame.data[4];
+      return true;
+    }
+    return false;
+  }
+
   void set_torque(float torque_nm) {
     can_frame frame{};
     const uint16_t torque_raw = encode_u16(torque_nm, -kProtocolTorqueMaxNm,
@@ -437,6 +462,9 @@ class Rs03Node final : public rclcpp::Node {
             RCLCPP_ERROR(get_logger(), "rejected non-finite command");
             return;
           }
+          if (!command_seen_)
+            RCLCPP_INFO(get_logger(), "first %s command received: %.3f",
+                        mode_.c_str(), msg->data);
           command_ = msg->data;
           last_command_ = now();
           command_seen_ = true;
@@ -494,6 +522,14 @@ class Rs03Node final : public rclcpp::Node {
       else if (mode_ == "velocity") run_mode = 2;
       else if (mode_ == "position_pp") run_mode = 1;
       can_->set_mode(run_mode);
+      uint8_t confirmed_run_mode = 0xff;
+      if (!can_->read_u8_parameter(kRunMode, confirmed_run_mode) ||
+          confirmed_run_mode != run_mode) {
+        throw std::runtime_error(
+            "refusing to enable: RS03 run_mode write could not be verified");
+      }
+      RCLCPP_INFO(get_logger(), "RS03 run_mode confirmed: %u",
+                  static_cast<unsigned>(confirmed_run_mode));
       if (mode_ == "current") {
         can_->set_iq(0.0F);
       } else if (mode_ == "velocity") {
@@ -582,14 +618,15 @@ class Rs03Node final : public rclcpp::Node {
       // The communication watchdog always wins over slew limiting.
       applied_command_ = 0.0F;
     }
-    if (mode_ == "current")
+    if (mode_ == "current") {
       can_->set_iq(applied_command_);
-    else if (mode_ == "torque")
+    } else if (mode_ == "torque") {
       can_->set_torque(applied_command_);
-    else if (mode_ == "velocity")
+    } else if (mode_ == "velocity") {
       can_->set_velocity(applied_command_);
-    else
+    } else {
       can_->set_position(startup_position_rad_ + applied_command_);
+    }
     if (fresh) timeout_reported_ = false;
 
     Rs03Can::Feedback fb{};
@@ -605,6 +642,13 @@ class Rs03Node final : public rclcpp::Node {
       velocity_pub_->publish(msg);
       msg.data = fb.temperature_c;
       temperature_pub_->publish(msg);
+
+      if (mode_ == "torque" && fresh) {
+        RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), 1000,
+            "torque command: requested=%.3f Nm, applied=%.3f Nm, feedback=%.3f Nm",
+            desired, applied_command_, fb.torque_nm);
+      }
 
       if (std::abs(fb.velocity_rad_s) > max_velocity_rad_s_)
         ++velocity_trip_count_;

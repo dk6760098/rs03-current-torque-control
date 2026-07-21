@@ -405,6 +405,10 @@ class Rs03Node final : public rclcpp::Node {
                                 0.0, static_cast<double>(kProtocolCurrentMaxA));
     max_torque_nm_ = std::clamp(declare_parameter("max_torque_nm", 2.0),
                                 0.0, static_cast<double>(kProtocolTorqueMaxNm));
+    torque_soft_velocity_start_rad_s_ =
+        declare_parameter("torque_soft_velocity_start_rad_s", 0.0);
+    torque_soft_velocity_limit_rad_s_ =
+        declare_parameter("torque_soft_velocity_limit_rad_s", 0.0);
     max_velocity_command_rad_s_ = declare_parameter("max_velocity_command_rad_s", 0.5);
     velocity_current_limit_a_ = declare_parameter("velocity_current_limit_a", 0.5);
     velocity_acceleration_rad_s2_ = declare_parameter("velocity_acceleration_rad_s2", 0.5);
@@ -440,6 +444,13 @@ class Rs03Node final : public rclcpp::Node {
       throw std::invalid_argument("safety limits and slew rates must be positive");
     if (velocity_trip_samples_ < 1)
       throw std::invalid_argument("velocity_trip_samples must be at least 1");
+    if (torque_soft_velocity_start_rad_s_ < 0.0 ||
+        torque_soft_velocity_limit_rad_s_ < 0.0 ||
+        (torque_soft_velocity_limit_rad_s_ > 0.0 &&
+         (torque_soft_velocity_start_rad_s_ >= torque_soft_velocity_limit_rad_s_ ||
+          torque_soft_velocity_limit_rad_s_ >= max_velocity_rad_s_)))
+      throw std::invalid_argument(
+          "torque soft velocity limits must satisfy 0 <= start < limit < max_velocity");
     if (mode_ != "current" && mode_ != "torque" && mode_ != "velocity" &&
         mode_ != "position_pp")
       throw std::invalid_argument(
@@ -504,6 +515,7 @@ class Rs03Node final : public rclcpp::Node {
     if (motor_online) {
       startup_position_rad_ = probe.position_rad;
       last_position_feedback_rad_ = probe.position_rad;
+      last_velocity_feedback_rad_s_ = probe.velocity_rad_s;
       has_position_feedback_ = true;
       RCLCPP_INFO(get_logger(),
                   "RS03 feedback received: position=%.3f rad, velocity=%.3f rad/s, "
@@ -618,10 +630,22 @@ class Rs03Node final : public rclcpp::Node {
       // The communication watchdog always wins over slew limiting.
       applied_command_ = 0.0F;
     }
+    float sent_command = applied_command_;
+    if (mode_ == "torque" && torque_soft_velocity_limit_rad_s_ > 0.0 &&
+        sent_command * last_velocity_feedback_rad_s_ > 0.0F) {
+      const float speed = std::abs(last_velocity_feedback_rad_s_);
+      const float soft_start =
+          static_cast<float>(torque_soft_velocity_start_rad_s_);
+      const float soft_limit =
+          static_cast<float>(torque_soft_velocity_limit_rad_s_);
+      const float scale = std::clamp(
+          (soft_limit - speed) / (soft_limit - soft_start), 0.0F, 1.0F);
+      sent_command *= scale;
+    }
     if (mode_ == "current") {
       can_->set_iq(applied_command_);
     } else if (mode_ == "torque") {
-      can_->set_torque(applied_command_);
+      can_->set_torque(sent_command);
     } else if (mode_ == "velocity") {
       can_->set_velocity(applied_command_);
     } else {
@@ -632,6 +656,7 @@ class Rs03Node final : public rclcpp::Node {
     Rs03Can::Feedback fb{};
     if (can_->receive_feedback(fb)) {
       last_position_feedback_rad_ = fb.position_rad;
+      last_velocity_feedback_rad_s_ = fb.velocity_rad_s;
       has_position_feedback_ = true;
       std_msgs::msg::Float32 msg;
       msg.data = fb.torque_nm;
@@ -646,8 +671,10 @@ class Rs03Node final : public rclcpp::Node {
       if (mode_ == "torque" && fresh) {
         RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 1000,
-            "torque command: requested=%.3f Nm, applied=%.3f Nm, feedback=%.3f Nm",
-            desired, applied_command_, fb.torque_nm);
+            "torque command: requested=%.3f Nm, ramped=%.3f Nm, sent=%.3f Nm, "
+            "feedback=%.3f Nm, velocity=%.3f rad/s",
+            desired, applied_command_, sent_command, fb.torque_nm,
+            fb.velocity_rad_s);
       }
 
       if (std::abs(fb.velocity_rad_s) > max_velocity_rad_s_)
@@ -694,6 +721,8 @@ class Rs03Node final : public rclcpp::Node {
   std::unique_ptr<Rs03Can> can_;
   std::string mode_;
   double timeout_s_{0.1}, max_current_a_{1.0}, max_torque_nm_{2.0};
+  double torque_soft_velocity_start_rad_s_{0.0};
+  double torque_soft_velocity_limit_rad_s_{0.0};
   bool position_waiting_for_command_{false};
   double max_velocity_command_rad_s_{0.5}, velocity_current_limit_a_{0.5};
   double velocity_acceleration_rad_s2_{0.5};
@@ -706,7 +735,7 @@ class Rs03Node final : public rclcpp::Node {
   int64_t velocity_trip_samples_{5};
   int64_t velocity_trip_count_{0};
   float command_{0.0F}, applied_command_{0.0F}, startup_position_rad_{0.0F};
-  float last_position_feedback_rad_{0.0F};
+  float last_position_feedback_rad_{0.0F}, last_velocity_feedback_rad_s_{0.0F};
   bool has_position_feedback_{false};
   bool enabled_{false}, command_seen_{false}, timeout_reported_{false};
   rclcpp::Time last_command_{0, 0, RCL_ROS_TIME};

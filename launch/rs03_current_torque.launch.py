@@ -19,6 +19,8 @@ def generate_launch_description():
         DeclareLaunchArgument("command_timeout_s", default_value="0.30"),
         DeclareLaunchArgument("max_current_a", default_value="0.5"),
         DeclareLaunchArgument("max_torque_nm", default_value="1.0"),
+        DeclareLaunchArgument("torque_soft_velocity_start_rad_s", default_value="0.0"),
+        DeclareLaunchArgument("torque_soft_velocity_limit_rad_s", default_value="0.0"),
         DeclareLaunchArgument("max_velocity_command_rad_s", default_value="0.5"),
         DeclareLaunchArgument("position_max_offset_rad", default_value="0.2"),
         DeclareLaunchArgument("position_current_limit_a", default_value="0.5"),
@@ -44,6 +46,10 @@ def generate_launch_description():
                         LaunchConfiguration("max_current_a"), value_type=float),
                     "max_torque_nm": ParameterValue(
                         LaunchConfiguration("max_torque_nm"), value_type=float),
+                    "torque_soft_velocity_start_rad_s": ParameterValue(
+                        LaunchConfiguration("torque_soft_velocity_start_rad_s"), value_type=float),
+                    "torque_soft_velocity_limit_rad_s": ParameterValue(
+                        LaunchConfiguration("torque_soft_velocity_limit_rad_s"), value_type=float),
                     "max_velocity_command_rad_s": ParameterValue(
                         LaunchConfiguration("max_velocity_command_rad_s"), value_type=float),
                     "position_max_offset_rad": ParameterValue(

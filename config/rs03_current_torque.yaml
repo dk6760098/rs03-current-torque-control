@@ -12,6 +12,8 @@ rs03_current_torque:
     command_timeout_s: 0.30       # tolerate WSL/serial scheduling jitter; still fails safe
     max_current_a: 0.5          # initial bench limit; RS03 protocol limit is 43 A
     max_torque_nm: 1.0          # initial bench limit; RS03 protocol limit is 60 Nm
+    torque_soft_velocity_start_rad_s: 0.0  # 0 disables the optional torque demo governor
+    torque_soft_velocity_limit_rad_s: 0.0
     max_velocity_command_rad_s: 0.5
     velocity_current_limit_a: 0.5
     velocity_acceleration_rad_s2: 0.5

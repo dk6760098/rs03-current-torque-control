@@ -25,6 +25,7 @@ def generate_launch_description():
         DeclareLaunchArgument("torque_breakaway_rearm_velocity_rad_s", default_value="0.05"),
         DeclareLaunchArgument("torque_breakaway_rearm_delay_s", default_value="0.30"),
         DeclareLaunchArgument("torque_breakaway_timeout_s", default_value="2.0"),
+        DeclareLaunchArgument("torque_breakaway_release_rate_nm_s", default_value="10.0"),
         DeclareLaunchArgument("torque_soft_velocity_start_rad_s", default_value="0.0"),
         DeclareLaunchArgument("torque_soft_velocity_limit_rad_s", default_value="0.0"),
         DeclareLaunchArgument("torque_soft_brake_gain_nm_per_rad_s", default_value="0.0"),
@@ -68,6 +69,8 @@ def generate_launch_description():
                         LaunchConfiguration("torque_breakaway_rearm_delay_s"), value_type=float),
                     "torque_breakaway_timeout_s": ParameterValue(
                         LaunchConfiguration("torque_breakaway_timeout_s"), value_type=float),
+                    "torque_breakaway_release_rate_nm_s": ParameterValue(
+                        LaunchConfiguration("torque_breakaway_release_rate_nm_s"), value_type=float),
                     "torque_soft_velocity_start_rad_s": ParameterValue(
                         LaunchConfiguration("torque_soft_velocity_start_rad_s"), value_type=float),
                     "torque_soft_velocity_limit_rad_s": ParameterValue(

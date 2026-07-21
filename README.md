@@ -101,7 +101,8 @@ ros2 topic pub -r 20 \
 
 `torque_breakaway_boost_nm` 启用起动力矩补偿：话题命令仍是正常运行力矩，静止
 起动时临时提升到该参数；过滤速度达到 `torque_breakaway_velocity_rad_s` 后，
-通过原有力矩斜坡降回话题命令。运行中速度持续低于
+通过 `torque_breakaway_release_rate_nm_s` 指定的快速下降斜坡降回话题命令，
+避免起动补偿在突破静摩擦后继续造成过大加速。运行中速度持续低于
 `torque_breakaway_rearm_velocity_rad_s` 达到 `torque_breakaway_rearm_delay_s` 后会
 重新启用补偿。补偿连续超过 `torque_breakaway_timeout_s` 仍未起动则停机，避免
 长时间堵转。起动力矩补偿与软速度监管不能同时启用。

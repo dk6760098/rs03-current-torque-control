@@ -18,6 +18,7 @@ rs03_current_torque:
     torque_breakaway_rearm_velocity_rad_s: 0.05
     torque_breakaway_rearm_delay_s: 0.30
     torque_breakaway_timeout_s: 2.0
+    torque_breakaway_release_rate_nm_s: 10.0 # quickly return to running torque after breakaway
     torque_soft_velocity_start_rad_s: 0.0  # 0 disables the optional torque demo governor
     torque_soft_velocity_limit_rad_s: 0.0
     torque_soft_brake_gain_nm_per_rad_s: 0.0

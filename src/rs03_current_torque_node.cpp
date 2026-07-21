@@ -415,6 +415,8 @@ class Rs03Node final : public rclcpp::Node {
         declare_parameter("torque_breakaway_rearm_delay_s", 0.30);
     torque_breakaway_timeout_s_ =
         declare_parameter("torque_breakaway_timeout_s", 2.0);
+    torque_breakaway_release_rate_nm_s_ =
+        declare_parameter("torque_breakaway_release_rate_nm_s", 10.0);
     torque_soft_velocity_start_rad_s_ =
         declare_parameter("torque_soft_velocity_start_rad_s", 0.0);
     torque_soft_velocity_limit_rad_s_ =
@@ -476,6 +478,7 @@ class Rs03Node final : public rclcpp::Node {
         torque_breakaway_rearm_velocity_rad_s_ >= torque_breakaway_velocity_rad_s_ ||
         torque_breakaway_rearm_delay_s_ <= 0.0 ||
         torque_breakaway_timeout_s_ <= 0.0 ||
+        torque_breakaway_release_rate_nm_s_ <= 0.0 ||
         (torque_breakaway_boost_nm_ > 0.0 &&
          torque_soft_velocity_limit_rad_s_ > 0.0))
       throw std::invalid_argument(
@@ -723,6 +726,14 @@ class Rs03Node final : public rclcpp::Node {
       float rate = static_cast<float>(torque_slew_rate_);
       if (mode_ == "current") rate = static_cast<float>(current_slew_rate_);
       else if (mode_ == "velocity") rate = static_cast<float>(velocity_slew_rate_);
+      else if (mode_ == "torque" && torque_breakaway_boost_nm_ > 0.0 &&
+               !torque_breakaway_active_ &&
+               std::abs(control_desired) < std::abs(applied_command_)) {
+        // Once static friction has been overcome, shed the temporary boost
+        // quickly.  Reusing the slow startup slew here leaves excess torque on
+        // the shaft and can cause an immediate overspeed trip.
+        rate = static_cast<float>(torque_breakaway_release_rate_nm_s_);
+      }
       const float max_step = rate * static_cast<float>(dt);
       applied_command_ +=
           std::clamp(control_desired - applied_command_, -max_step, max_step);
@@ -866,6 +877,7 @@ class Rs03Node final : public rclcpp::Node {
   double torque_breakaway_velocity_rad_s_{0.12};
   double torque_breakaway_rearm_velocity_rad_s_{0.05};
   double torque_breakaway_rearm_delay_s_{0.30}, torque_breakaway_timeout_s_{2.0};
+  double torque_breakaway_release_rate_nm_s_{10.0};
   double torque_soft_velocity_start_rad_s_{0.0};
   double torque_soft_velocity_limit_rad_s_{0.0};
   double torque_soft_brake_gain_nm_per_rad_s_{0.0};

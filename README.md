@@ -70,7 +70,7 @@ ros2 topic pub -r 20 \
   /rs03_current_torque/current_command_a std_msgs/msg/Float32 "{data: 0.1}"
 ```
 
-停止发布超过 100 ms 后，看门狗会把指令归零、发送停止帧并锁定禁止输出；
+停止发布超过 `command_timeout_s`（默认 300 ms）后，看门狗会把指令归零、发送停止帧并锁定禁止输出；
 必须重启节点才能再次使能。完成测试后仍要停止控制节点，不要依赖软件停机
 代替硬件急停。
 
@@ -190,7 +190,7 @@ ros2 topic pub -r 20 /rs03_current_torque/current_command_a std_msgs/msg/Float32
 ros2 topic pub -r 20 /rs03_current_torque/torque_command_nm std_msgs/msg/Float32 "{data: 0.5}"
 ```
 
-命令必须持续刷新；超过 `command_timeout_s`（默认 100 ms）后会归零、停机并锁定，
+命令必须持续刷新；超过 `command_timeout_s`（默认 300 ms）后会归零、停机并锁定，
 需要重启节点才能再次使能。节点退出时也会先发零命令，再发送停止帧。
 
 读取单个反馈样本时使用 ROS2 自带的正常退出选项，不要用 Linux `timeout`

@@ -16,6 +16,7 @@ def generate_launch_description():
                               choices=["true", "false"]),
         DeclareLaunchArgument("control_mode", default_value="current",
                               choices=["current", "torque", "velocity", "position_pp"]),
+        DeclareLaunchArgument("command_timeout_s", default_value="0.30"),
         DeclareLaunchArgument("max_current_a", default_value="0.5"),
         DeclareLaunchArgument("max_torque_nm", default_value="1.0"),
         DeclareLaunchArgument("max_velocity_command_rad_s", default_value="0.5"),
@@ -37,6 +38,8 @@ def generate_launch_description():
                     "auto_enable": ParameterValue(
                         LaunchConfiguration("auto_enable"), value_type=bool),
                     "control_mode": LaunchConfiguration("control_mode"),
+                    "command_timeout_s": ParameterValue(
+                        LaunchConfiguration("command_timeout_s"), value_type=float),
                     "max_current_a": ParameterValue(
                         LaunchConfiguration("max_current_a"), value_type=float),
                     "max_torque_nm": ParameterValue(

@@ -9,7 +9,7 @@ rs03_current_torque:
     master_id: 255
     control_mode: current       # current | torque | velocity | position_pp
     auto_enable: false          # first bench test: keep false
-    command_timeout_s: 0.10
+    command_timeout_s: 0.30       # tolerate WSL/serial scheduling jitter; still fails safe
     max_current_a: 0.5          # initial bench limit; RS03 protocol limit is 43 A
     max_torque_nm: 1.0          # initial bench limit; RS03 protocol limit is 60 Nm
     max_velocity_command_rad_s: 0.5

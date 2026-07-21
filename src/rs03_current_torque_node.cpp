@@ -375,7 +375,7 @@ class Rs03Node final : public rclcpp::Node {
     const auto master_id = declare_parameter("master_id", 255);
     mode_ = declare_parameter("control_mode", "current");
     const bool auto_enable = declare_parameter("auto_enable", false);
-    timeout_s_ = declare_parameter("command_timeout_s", 0.10);
+    timeout_s_ = declare_parameter("command_timeout_s", 0.30);
     max_current_a_ = std::clamp(declare_parameter("max_current_a", 1.0),
                                 0.0, static_cast<double>(kProtocolCurrentMaxA));
     max_torque_nm_ = std::clamp(declare_parameter("max_torque_nm", 2.0),
